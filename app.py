@@ -225,6 +225,11 @@ def index():
     total_conveyance = sum(a.get("conveyance", 0) for a in data["attendance"])
     total_expenses = sum(e.get("amount", 0) for e in data["expenses"])
 
+    # Filtered totals for bottom summary row
+    filtered_total_amount = sum(a.get("amount", 0) for a in filtered_attendance)
+    filtered_total_conveyance = sum(a.get("conveyance", 0) for a in filtered_attendance)
+    filtered_grand_total = filtered_total_amount + filtered_total_conveyance
+
     return render_template_string(
         DASHBOARD_HTML,
         data=data,
@@ -234,7 +239,10 @@ def index():
         sources_status="GitHub API Synced" if (GITHUB_TOKEN and GITHUB_REPO) else "Local Storage Mode",
         total_amount=total_amount,
         total_conveyance=total_conveyance,
-        total_expenses=total_expenses
+        total_expenses=total_expenses,
+        filtered_total_amount=filtered_total_amount,
+        filtered_total_conveyance=filtered_total_conveyance,
+        filtered_grand_total=filtered_grand_total
     )
 
 @app.route("/export/excel")
@@ -594,6 +602,15 @@ DASHBOARD_HTML = """
                                     </tr>
                                     {% endfor %}
                                 </tbody>
+                                <!-- TOTAL / SUMMARY FOOTER ROW -->
+                                <tfoot>
+                                    <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
+                                        <td colspan="7" class="p-3 text-right uppercase tracking-wider text-indigo-400">Total Sum:</td>
+                                        <td class="p-3 border-r border-gray-700 text-gray-200">₹{{ filtered_total_amount }}</td>
+                                        <td class="p-3 border-r border-gray-700 text-amber-400">₹{{ filtered_total_conveyance }}</td>
+                                        <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_grand_total }}</td>
+                                    </tr>
+                                </tfoot>
                             </table>
                         </div>
                     </div>
