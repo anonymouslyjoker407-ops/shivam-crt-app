@@ -16,7 +16,7 @@ except ImportError:
 
 try:
     from reportlab.lib.pagesizes import letter, landscape
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib import colors
     PDF_SUPPORT = True
@@ -428,16 +428,18 @@ def export_cash_excel():
     ws = wb.active
     ws.title = "Cash Expenses"
 
-    headers = ["Sr #", "Date", "Pay To", "Description", "Amount (₹)"]
+    headers = ["Sr #", "Date", "Pay To", "Description", "Amount (₹)", "Attachments Info"]
     ws.append(headers)
 
     for idx, c in enumerate(data.get("cash_expenses", []), 1):
+        att_names = ", ".join([att.get("file_name", "") for att in c.get("attachments", [])])
         ws.append([
             idx,
             c.get("date", ""),
             c.get("pay_to", ""),
             c.get("description", ""),
-            c.get("amount", 0)
+            c.get("amount", 0),
+            att_names if att_names else "No Files"
         ])
 
     output = io.BytesIO()
@@ -460,7 +462,7 @@ def export_cash_pdf():
         return "reportlab library not installed on server.", 400
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
 
     styles = getSampleStyleSheet()
@@ -469,31 +471,76 @@ def export_cash_pdf():
     elements.append(Paragraph("Shivam CRT - Cash Expenses Master Ledger", title_style))
     elements.append(Spacer(1, 10))
 
-    table_data = [["Sr", "Date", "Pay To", "Description", "Amount"]]
-    for idx, c in enumerate(data.get("cash_expenses", []), 1):
-        table_data.append([
-            str(idx),
-            str(c.get("date", "")),
-            str(c.get("pay_to", "")),
-            str(c.get("description", "")),
-            f"Rs {c.get('amount', 0)}"
-        ])
+    # Group cash expenses by date
+    cash_expenses = data.get("cash_expenses", [])
+    
+    # Sort or iterate grouped by date
+    # Let's organize data by date groups
+    grouped_cash = {}
+    for c in cash_expenses:
+        d = c.get("date", "Unspecified Date")
+        if d not in grouped_cash:
+            grouped_cash[d] = []
+        grouped_cash[d].append(c)
 
-    t = Table(table_data, colWidths=[40, 90, 140, 180, 90])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#064e3b')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,0), 9),
-        ('BOTTOMPADDING', (0,0), (-1,0), 6),
-        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f0fdf4')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#a7f3d0')),
-        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
-        ('FONTSIZE', (0,1), (-1,-1), 8),
-    ]))
+    for d, items in grouped_cash.items():
+        elements.append(Paragraph(f"<b>Date Group: {d}</b>", ParagraphStyle('DateGroupStyle', parent=styles['Heading3'], fontSize=11, textColor=colors.HexColor('#064e3b'), spaceBefore=8, spaceAfter=4)))
+        
+        table_data = [["Sr", "Pay To", "Description", "Amount", "Attachments & Images"]]
+        date_total = 0
+        
+        for idx, c in enumerate(items, 1):
+            date_total += c.get('amount', 0)
+            
+            # Format attachments column content (text + images if possible)
+            att_flowables = []
+            atts = c.get("attachments", [])
+            if atts:
+                for att in atts:
+                    fname = att.get("file_name", "")
+                    att_flowables.append(Paragraph(f"• {fname}", ParagraphStyle('AttText', fontSize=7, textColor=colors.HexColor('#1e293b'))))
+                    # Try embedding image if it's an image
+                    fdata = att.get("file_data", "")
+                    if fdata and (fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))):
+                        try:
+                            img_bytes = base64.b64decode(fdata)
+                            img_io = io.BytesIO(img_bytes)
+                            rl_img = RLImage(img_io, width=80, height=60)
+                            att_flowables.append(rl_img)
+                            att_flowables.append(Spacer(1, 4))
+                        except:
+                            pass
+            else:
+                att_flowables = [Paragraph("No Files", ParagraphStyle('NoAtt', fontSize=7, textColor=colors.HexColor('#64748b')))]
 
-    elements.append(t)
+            table_data.append([
+                str(idx),
+                str(c.get("pay_to", "")),
+                str(c.get("description", "")),
+                f"Rs {c.get('amount', 0)}",
+                att_flowables
+            ])
+
+        t = Table(table_data, colWidths=[25, 110, 150, 75, 160])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#064e3b')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,0), 8),
+            ('BOTTOMPADDING', (0,0), (-1,0), 5),
+            ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f0fdf4')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#a7f3d0')),
+            ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,1), (-1,-1), 7),
+        ]))
+        elements.append(t)
+        
+        # Subtotal paragraph for the date
+        elements.append(Paragraph(f"<b>Subtotal for {d}: Rs {date_total}</b>", ParagraphStyle('SubTotalStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#047857'), alignment=2, spaceBefore=4, spaceAfter=10)))
+        elements.append(Spacer(1, 5))
+
     doc.build(elements)
     buffer.seek(0)
 
@@ -912,7 +959,7 @@ DASHBOARD_HTML = """
 
                     <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
-                            <h3 class="font-bold dynamic-text">💵 Cash Expense Ledger</h3>
+                            <h3 class="font-bold dynamic-text">💵 Date-Wise Grouped Cash Expense Ledger</h3>
                             
                             <!-- Search & Export Controls for Cash Expense -->
                             <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
@@ -945,7 +992,26 @@ DASHBOARD_HTML = """
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-gray-800 font-mono">
+                                    {% set c_ns = namespace(current_date='', date_amt=0) %}
                                     {% for c in filtered_cash_expenses %}
+                                        {% if c.date != c_ns.current_date %}
+                                            {% if not loop.first %}
+                                            <!-- Cash Date Subtotal Row -->
+                                            <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
+                                                <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
+                                                <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
+                                            </tr>
+                                            {% endif %}
+                                            {% set c_ns.current_date = c.date %}
+                                            {% set c_ns.date_amt = c.amount %}
+                                            <!-- Cash Date Group Header -->
+                                            <tr class="bg-emerald-900/40 text-emerald-400 font-bold">
+                                                <td colspan="7" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ c.date or 'Unspecified Date' }}</td>
+                                            </tr>
+                                        {% else %}
+                                            {% set c_ns.date_amt = c_ns.date_amt + c.amount %}
+                                        {% endif %}
+
                                     <tr class="hover:bg-gray-800/35 transition">
                                         <td class="p-3 border-r border-gray-800">{{ loop.index }}</td>
                                         <td class="p-3 border-r border-gray-800 text-gray-300">{{ c.date }}</td>
@@ -968,11 +1034,18 @@ DASHBOARD_HTML = """
                                             <a href="/delete/cash_expense/{{ c.id }}" onclick="return confirm('Confirm delete cash expense?');" class="text-red-400 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold inline-block">Delete</a>
                                         </td>
                                     </tr>
+                                        {% if loop.last and filtered_cash_expenses %}
+                                        <!-- Last Cash Date Subtotal Row -->
+                                        <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
+                                            <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
+                                            <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
+                                        </tr>
+                                        {% endif %}
                                     {% endfor %}
                                 </tbody>
                                 <tfoot>
                                     <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
-                                        <td colspan="4" class="p-3 text-right uppercase tracking-wider text-emerald-400">Total Sum:</td>
+                                        <td colspan="4" class="p-3 text-right uppercase tracking-wider text-emerald-400">Grand Total Sum:</td>
                                         <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_cash_total }}</td>
                                     </tr>
                                 </tfoot>
