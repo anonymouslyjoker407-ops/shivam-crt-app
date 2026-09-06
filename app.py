@@ -8,9 +8,9 @@ from datetime import datetime
 app = Flask(__name__)
 app.secret_key = "shivam_crt_secure_master_key_2026"
 
-# Updated GitHub API Configurations
-GITHUB_TOKEN = ""
-GITHUB_REPO = os.environ.get("GITHUB_REPO")  # Ensure this environment variable is set (e.g. "username/repo-name")
+# Updated GitHub API Configurations (securely loaded via Environment Variables)
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")  # e.g. "username/repo-name"
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 FILE_PATH = "shivam_crt_data.json"
 
