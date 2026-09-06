@@ -35,8 +35,7 @@ def load_data():
     default_data = {
         "attendance": [],
         "expenses": [],
-        "cash_expenses": [],
-        "documents": []
+        "cash_expenses": []
     }
     
     if not GITHUB_TOKEN or not GITHUB_REPO:
@@ -126,12 +125,10 @@ def index():
     data.setdefault("attendance", [])
     data.setdefault("expenses", [])
     data.setdefault("cash_expenses", [])
-    data.setdefault("documents", [])
 
     action = request.args.get("action", "dashboard")
     search_query = request.args.get("search", "").strip().lower()
     cash_search = request.args.get("cash_search", "").strip().lower()
-    doc_search = request.args.get("doc_search", "").strip().lower()
 
     if request.method == "POST":
         form_type = request.form.get("form_type")
@@ -262,43 +259,6 @@ def index():
             save_data(data)
             return redirect(url_for("index", action="cash_expenses"))
 
-        elif form_type == "add_document":
-            file_name = ""
-            file_data = ""
-            uploaded_file = request.files.get("document_file")
-            if uploaded_file and uploaded_file.filename:
-                file_name = uploaded_file.filename
-                file_bytes = uploaded_file.read()
-                file_data = base64.b64encode(file_bytes).decode("utf-8")
-
-            new_doc = {
-                "id": max([d["id"] for d in data["documents"]], default=0) + 1,
-                "date": request.form.get("date", datetime.now().strftime("%Y-%m-%d")),
-                "title": request.form.get("title", ""),
-                "description": request.form.get("description", ""),
-                "file_name": file_name,
-                "file_data": file_data
-            }
-            data["documents"].append(new_doc)
-            save_data(data)
-            return redirect(url_for("index", action="documents"))
-
-        elif form_type == "edit_document":
-            d_id = int(request.form.get("record_id", 0))
-            for doc in data["documents"]:
-                if doc["id"] == d_id:
-                    doc["date"] = request.form.get("date", doc.get("date", ""))
-                    doc["title"] = request.form.get("title", "")
-                    doc["description"] = request.form.get("description", "")
-                    
-                    uploaded_file = request.files.get("document_file")
-                    if uploaded_file and uploaded_file.filename:
-                        doc["file_name"] = uploaded_file.filename
-                        file_bytes = uploaded_file.read()
-                        doc["file_data"] = base64.b64encode(file_bytes).decode("utf-8")
-            save_data(data)
-            return redirect(url_for("index", action="documents"))
-
     # Filtering attendance
     filtered_attendance = data["attendance"]
     if search_query:
@@ -324,22 +284,10 @@ def index():
                cash_search in str(c.get("amount", "")).lower()
         ]
 
-    # Filtering documents
-    filtered_documents = data["documents"]
-    if doc_search:
-        filtered_documents = [
-            d for d in data["documents"]
-            if doc_search in str(d.get("title", "")).lower() or
-               doc_search in str(d.get("description", "")).lower() or
-               doc_search in str(d.get("file_name", "")).lower() or
-               doc_search in str(d.get("date", "")).lower()
-        ]
-
     total_amount = sum(a.get("amount", 0) for a in data["attendance"])
     total_conveyance = sum(a.get("conveyance", 0) for a in data["attendance"])
     total_expenses = sum(e.get("amount", 0) for e in data["expenses"])
     total_cash_expenses = sum(c.get("amount", 0) for c in data["cash_expenses"])
-    total_documents = len(data["documents"])
 
     filtered_total_amount = sum(a.get("amount", 0) for a in filtered_attendance)
     filtered_total_conveyance = sum(a.get("conveyance", 0) for a in filtered_attendance)
@@ -351,17 +299,14 @@ def index():
         data=data,
         filtered_attendance=filtered_attendance,
         filtered_cash_expenses=filtered_cash_expenses,
-        filtered_documents=filtered_documents,
         action=action,
         search_query=search_query,
         cash_search=cash_search,
-        doc_search=doc_search,
         sources_status="GitHub API Synced" if (GITHUB_TOKEN and GITHUB_REPO) else "Local Storage Mode",
         total_amount=total_amount,
         total_conveyance=total_conveyance,
         total_expenses=total_expenses,
         total_cash_expenses=total_cash_expenses,
-        total_documents=total_documents,
         filtered_total_amount=filtered_total_amount,
         filtered_total_conveyance=filtered_total_conveyance,
         filtered_grand_total=filtered_grand_total,
@@ -526,7 +471,11 @@ def export_cash_pdf():
     elements.append(Paragraph("Shivam CRT - Cash Expenses Master Ledger", title_style))
     elements.append(Spacer(1, 10))
 
+    # Group cash expenses by date
     cash_expenses = data.get("cash_expenses", [])
+    
+    # Sort or iterate grouped by date
+    # Let's organize data by date groups
     grouped_cash = {}
     for c in cash_expenses:
         d = c.get("date", "Unspecified Date")
@@ -542,12 +491,15 @@ def export_cash_pdf():
         
         for idx, c in enumerate(items, 1):
             date_total += c.get('amount', 0)
+            
+            # Format attachments column content (text + images if possible)
             att_flowables = []
             atts = c.get("attachments", [])
             if atts:
                 for att in atts:
                     fname = att.get("file_name", "")
                     att_flowables.append(Paragraph(f"• {fname}", ParagraphStyle('AttText', fontSize=7, textColor=colors.HexColor('#1e293b'))))
+                    # Try embedding image if it's an image
                     fdata = att.get("file_data", "")
                     if fdata and (fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))):
                         try:
@@ -584,6 +536,8 @@ def export_cash_pdf():
             ('FONTSIZE', (0,1), (-1,-1), 7),
         ]))
         elements.append(t)
+        
+        # Subtotal paragraph for the date
         elements.append(Paragraph(f"<b>Subtotal for {d}: Rs {date_total}</b>", ParagraphStyle('SubTotalStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#047857'), alignment=2, spaceBefore=4, spaceAfter=10)))
         elements.append(Spacer(1, 5))
 
@@ -605,7 +559,6 @@ def delete_item(category, item_id):
     data.setdefault("attendance", [])
     data.setdefault("expenses", [])
     data.setdefault("cash_expenses", [])
-    data.setdefault("documents", [])
 
     if category == "attendance":
         data["attendance"] = [a for a in data["attendance"] if a["id"] != item_id]
@@ -616,9 +569,6 @@ def delete_item(category, item_id):
     elif category == "cash_expense":
         data["cash_expenses"] = [c for c in data["cash_expenses"] if c["id"] != item_id]
         redirect_action = "cash_expenses"
-    elif category == "document":
-        data["documents"] = [d for d in data["documents"] if d["id"] != item_id]
-        redirect_action = "documents"
     
     save_data(data)
     return redirect(url_for("index", action=redirect_action))
@@ -673,6 +623,7 @@ DASHBOARD_HTML = """
 <body class="bg-gray-950 text-gray-100 font-sans transition-colors duration-200" id="bodyTheme">
     <div class="flex h-screen overflow-hidden">
         
+        <!-- SIDEBAR -->
         <div class="hidden md:flex flex-col w-64 bg-gray-900 border-r border-gray-800 p-6 sidebar-panel" id="sidebarPanel">
             <h1 class="text-2xl font-black text-indigo-400 mb-1 tracking-wider">⚡ Shivam CRT</h1>
             <p class="text-xs text-gray-400 mb-6 font-mono">Operations Portal</p>
@@ -685,11 +636,11 @@ DASHBOARD_HTML = """
                 <a href="/?action=attendance" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'attendance' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">📋 Attendance & Ledger</a>
                 <a href="/?action=expenses" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'expenses' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">💡 Expenses Ledger</a>
                 <a href="/?action=cash_expenses" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'cash_expenses' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">💵 Cash Expense</a>
-                <a href="/?action=documents" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'documents' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">📁 Documents</a>
                 <a href="/logout" class="block py-2.5 px-4 rounded-xl font-semibold text-red-400 hover:bg-red-500/10 transition mt-8">🚪 Log Out</a>
             </nav>
         </div>
 
+        <!-- MAIN CONTAINER -->
         <div class="flex-1 flex flex-col overflow-y-auto">
             <header class="bg-gray-900 border-b border-gray-800 p-4 flex justify-between items-center header-panel" id="headerPanel">
                 <h1 class="text-lg font-black text-indigo-400">⚡ Shivam CRT</h1>
@@ -699,12 +650,12 @@ DASHBOARD_HTML = """
                 </div>
             </header>
 
+            <!-- MOBILE NAV -->
             <div class="flex md:hidden bg-gray-900 p-2 overflow-x-auto space-x-2 border-b border-gray-800 shrink-0">
                 <a href="/?action=dashboard" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'dashboard' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Dashboard</a>
                 <a href="/?action=attendance" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'attendance' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Attendance</a>
                 <a href="/?action=expenses" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'expenses' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Expenses</a>
                 <a href="/?action=cash_expenses" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'cash_expenses' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Cash Expense</a>
-                <a href="/?action=documents" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'documents' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Documents</a>
             </div>
 
             <div class="p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-6">
@@ -738,7 +689,6 @@ DASHBOARD_HTML = """
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Attendance Records:</span> <strong class="text-indigo-400">{{ data.attendance|length }}</strong></li>
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Expense Categories:</span> <strong class="text-red-400">{{ data.expenses|length }}</strong></li>
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Cash Expense Records:</span> <strong class="text-emerald-400">{{ data.cash_expenses|length }}</strong></li>
-                            <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Saved Documents:</span> <strong class="text-blue-400">{{ total_documents }}</strong></li>
                         </ul>
                     </div>
                 </div>
@@ -803,6 +753,7 @@ DASHBOARD_HTML = """
                         </form>
                     </div>
 
+                    <!-- ATTENDANCE TABLE WITH DATE-WISE GROUPING -->
                     <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <h3 class="font-bold dynamic-text">📋 Date-Wise Grouped Attendance Ledger</h3>
@@ -847,6 +798,7 @@ DASHBOARD_HTML = """
                                     {% for a in filtered_attendance %}
                                         {% if a.date != ns.current_date %}
                                             {% if not loop.first %}
+                                            <!-- Date Subtotal Row -->
                                             <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                                 <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
                                                 <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
@@ -857,6 +809,7 @@ DASHBOARD_HTML = """
                                             {% set ns.current_date = a.date %}
                                             {% set ns.date_amt = a.amount %}
                                             {% set ns.date_conv = a.conveyance %}
+                                            <!-- Date Group Header -->
                                             <tr class="bg-indigo-900/40 text-indigo-400 font-bold">
                                                 <td colspan="13" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ a.date or 'Unspecified Date' }}</td>
                                             </tr>
@@ -896,6 +849,7 @@ DASHBOARD_HTML = """
                                         </td>
                                     </tr>
                                         {% if loop.last and filtered_attendance %}
+                                        <!-- Last Date Subtotal Row -->
                                         <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                             <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
                                             <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
@@ -1007,6 +961,7 @@ DASHBOARD_HTML = """
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <h3 class="font-bold dynamic-text">💵 Date-Wise Grouped Cash Expense Ledger</h3>
                             
+                            <!-- Search & Export Controls for Cash Expense -->
                             <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
                                 <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
                                     <input type="hidden" name="action" value="cash_expenses">
@@ -1041,6 +996,7 @@ DASHBOARD_HTML = """
                                     {% for c in filtered_cash_expenses %}
                                         {% if c.date != c_ns.current_date %}
                                             {% if not loop.first %}
+                                            <!-- Cash Date Subtotal Row -->
                                             <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                                 <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
                                                 <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
@@ -1048,6 +1004,7 @@ DASHBOARD_HTML = """
                                             {% endif %}
                                             {% set c_ns.current_date = c.date %}
                                             {% set c_ns.date_amt = c.amount %}
+                                            <!-- Cash Date Group Header -->
                                             <tr class="bg-emerald-900/40 text-emerald-400 font-bold">
                                                 <td colspan="7" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ c.date or 'Unspecified Date' }}</td>
                                             </tr>
@@ -1078,6 +1035,7 @@ DASHBOARD_HTML = """
                                         </td>
                                     </tr>
                                         {% if loop.last and filtered_cash_expenses %}
+                                        <!-- Last Cash Date Subtotal Row -->
                                         <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                             <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
                                             <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
@@ -1095,101 +1053,13 @@ DASHBOARD_HTML = """
                         </div>
                     </div>
                 </div>
-
-                {% elif action == 'documents' %}
-                <div class="space-y-6">
-                    <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl card-panel">
-                        <h2 class="text-xl font-bold text-blue-400 mb-4">📁 Upload & Manage Documents</h2>
-                        <form method="POST" enctype="multipart/form-data" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <input type="hidden" name="form_type" value="add_document">
-                            <div>
-                                <label class="text-xs text-gray-400">Date</label>
-                                <input type="date" name="date" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
-                            </div>
-                            <div>
-                                <label class="text-xs text-gray-400">Document Title / Name</label>
-                                <input type="text" name="title" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="e.g. Agreement, Tax Form, Invoice">
-                            </div>
-                            <div class="sm:col-span-2">
-                                <label class="text-xs text-gray-400">Description / Details</label>
-                                <input type="text" name="description" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Write description about this document...">
-                            </div>
-                            <div class="sm:col-span-2">
-                                <label class="text-xs text-gray-400">Upload File (PDF, Excel, Images, etc.)</label>
-                                <input type="file" name="document_file" required class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300">
-                            </div>
-                            <div class="sm:col-span-2">
-                                <button type="submit" class="w-full py-3 bg-blue-500 hover:bg-blue-600 font-bold text-gray-950 rounded-xl transition text-sm shadow-lg">Save Document Record</button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
-                        <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
-                            <h3 class="font-bold dynamic-text">📂 Saved Documents Repository</h3>
-                            
-                            <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
-                                <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
-                                    <input type="hidden" name="action" value="documents">
-                                    <input type="text" name="doc_search" value="{{ doc_search }}" placeholder="Search by title, description..." class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-full sm:w-64">
-                                    <button type="submit" class="px-3 py-1.5 bg-blue-500 text-gray-950 font-bold rounded-xl text-xs hover:bg-blue-600 transition">Search</button>
-                                    {% if doc_search %}
-                                        <a href="/?action=documents" class="px-2 py-1.5 bg-gray-700 text-gray-300 rounded-xl text-xs hover:bg-gray-600">Clear</a>
-                                    {% endif %}
-                                </form>
-                            </div>
-                        </div>
-
-                        <div class="overflow-x-auto">
-                            <table class="w-full text-left border-collapse text-xs">
-                                <thead>
-                                    <tr class="bg-gray-800/80 text-gray-300 uppercase tracking-wider font-mono">
-                                        <th class="p-3 border-r border-gray-700">Sr #</th>
-                                        <th class="p-3 border-r border-gray-700">Date</th>
-                                        <th class="p-3 border-r border-gray-700">Title</th>
-                                        <th class="p-3 border-r border-gray-700">Description</th>
-                                        <th class="p-3 border-r border-gray-700">File Name</th>
-                                        <th class="p-3 text-center">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody class="divide-y divide-gray-800 font-mono">
-                                    {% for doc in filtered_documents %}
-                                    <tr class="hover:bg-gray-800/35 transition">
-                                        <td class="p-3 border-r border-gray-800">{{ loop.index }}</td>
-                                        <td class="p-3 border-r border-gray-800 text-gray-300">{{ doc.date }}</td>
-                                        <td class="p-3 border-r border-gray-800 font-bold text-blue-400">{{ doc.title }}</td>
-                                        <td class="p-3 border-r border-gray-800 text-gray-200">{{ doc.description }}</td>
-                                        <td class="p-3 border-r border-gray-800">
-                                            {% if doc.file_name %}
-                                                <button onclick="openFileViewer('data:application/octet-stream;base64,{{ doc.file_data }}', '{{ doc.file_name }}')" class="text-indigo-400 underline hover:text-indigo-300 text-[10px] text-left">📎 {{ doc.file_name }}</button>
-                                            {% else %}
-                                                <span class="text-gray-500 text-[10px]">No File</span>
-                                            {% endif %}
-                                        </td>
-                                        <td class="p-3 text-center space-x-2 whitespace-nowrap">
-                                            {% if doc.file_name %}
-                                                <a href="data:application/octet-stream;base64,{{ doc.file_data }}" download="{{ doc.file_name }}" class="text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded text-[10px] font-bold inline-block">Download</a>
-                                            {% endif %}
-                                            <button onclick='openEditDocModal({{ doc|tojson|safe }})' class="text-blue-400 bg-blue-500/10 px-2 py-1 rounded text-[10px] font-bold cursor-pointer">Edit</button>
-                                            <a href="/delete/document/{{ doc.id }}" onclick="return confirm('Confirm delete document?');" class="text-red-400 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold inline-block">Delete</a>
-                                        </td>
-                                    </tr>
-                                    {% else %}
-                                    <tr>
-                                        <td colspan="6" class="p-4 text-center text-gray-400 italic">No documents found.</td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
                 {% endif %}
 
             </div>
         </div>
     </div>
 
+    <!-- EDIT ATTENDANCE MODAL -->
     <div id="editModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button type="button" onclick="closeEditModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
@@ -1221,6 +1091,7 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
+    <!-- EDIT CASH EXPENSE MODAL -->
     <div id="editCashModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button type="button" onclick="closeEditCashModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
@@ -1246,28 +1117,7 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
-    <div id="editDocModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
-        <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-            <button type="button" onclick="closeEditDocModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
-            <h3 class="text-xl font-bold text-blue-400 mb-4">Edit Document Record</h3>
-            <form id="editDocForm" method="POST" enctype="multipart/form-data" class="space-y-4">
-                <input type="hidden" name="form_type" value="edit_document">
-                <input type="hidden" name="record_id" id="editDocRecordId">
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div><label class="text-xs text-gray-400">Date</label><input type="date" name="date" id="editDocDate" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div><label class="text-xs text-gray-400">Title</label><input type="text" name="title" id="editDocTitle" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Description</label><input type="text" name="description" id="editDocDesc" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div class="sm:col-span-2">
-                        <label class="text-xs text-blue-400 font-bold block mb-1">Current File: <span id="editDocCurrentFileName" class="text-gray-300 font-normal"></span></label>
-                        <label class="text-xs text-gray-400">Upload New File to Replace (Optional)</label>
-                        <input type="file" name="document_file" class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300">
-                    </div>
-                </div>
-                <button type="submit" class="w-full py-3 bg-blue-500 hover:bg-blue-600 text-gray-950 font-bold rounded-xl shadow-lg transition text-sm">Save Changes</button>
-            </form>
-        </div>
-    </div>
-
+    <!-- FILE ZOOM MODAL -->
     <div id="fileModal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-3xl p-4 shadow-2xl relative flex flex-col items-center">
             <button onclick="closeFileViewer()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg z-10">✕</button>
@@ -1403,28 +1253,13 @@ DASHBOARD_HTML = """
             document.getElementById('editCashModal').classList.add('hidden');
         }
 
-        function openEditDocModal(item) {
-            document.getElementById('editDocModal').classList.remove('hidden');
-            document.getElementById('editDocModal').classList.add('flex');
-            document.getElementById('editDocRecordId').value = item.id;
-            document.getElementById('editDocDate').value = item.date || '';
-            document.getElementById('editDocTitle').value = item.title || '';
-            document.getElementById('editDocDesc').value = item.description || '';
-            document.getElementById('editDocCurrentFileName').innerText = item.file_name || 'None';
-        }
-
-        function closeEditDocModal() {
-            document.getElementById('editDocModal').classList.remove('flex');
-            document.getElementById('editDocModal').classList.add('hidden');
-        }
-
         function openFileViewer(dataUri, fileName) {
             const modal = document.getElementById('fileModal');
             const container = document.getElementById('fileViewerContainer');
             document.getElementById('fileModalTitle').innerText = "Viewing: " + fileName;
             container.innerHTML = '';
             
-            if (fileName.toLowerCase().endswith('.pdf')) {
+            if (fileName.toLowerCase().endsWith('.pdf')) {
                 container.innerHTML = `<iframe src="${dataUri}" class="w-full h-[70vh] rounded border border-gray-700"></iframe>`;
             } else {
                 container.innerHTML = `<img src="${dataUri}" class="max-w-full max-h-[70vh] object-contain rounded cursor-zoom-in" onclick="this.classList.toggle('scale-125')">`;
