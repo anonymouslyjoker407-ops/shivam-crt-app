@@ -38,63 +38,82 @@ def load_data():
         "cash_expenses": []
     }
     
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        if not os.path.exists(FILE_PATH):
-            with open(FILE_PATH, "w", encoding="utf-8") as f:
-                json.dump(default_data, f, indent=4, ensure_ascii=False)
+    # Always load/fallback safely from local file if exists to prevent data wiping
+    local_data = default_data.copy()
+    if os.path.exists(FILE_PATH):
         try:
             with open(FILE_PATH, "r", encoding="utf-8") as f:
-                d = json.load(f)
-                for key in default_data:
-                    if key not in d:
-                        d[key] = default_data[key]
-                return d
+                local_data = json.load(f)
         except:
-            return default_data
+            pass
+
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        for key in default_data:
+            if key not in local_data:
+                local_data[key] = default_data[key]
+        return local_data
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "vnd.github+json"}
-    response = requests.get(url, headers=headers)
     
-    if response.status_code == 200:
-        try:
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
             file_content = response.json().get("content")
             decoded_content = base64.b64decode(file_content).decode("utf-8")
-            d = json.loads(decoded_content)
+            remote_data = json.loads(decoded_content)
+            
+            # Merge or ensure keys exist, preferring remote if valid, else fallback to local if remote is empty
             for key in default_data:
-                if key not in d:
-                    d[key] = default_data[key]
-            return d
-        except:
-            return default_data
-    else:
-        save_data(default_data)
-        return default_data
+                if key not in remote_data:
+                    remote_data[key] = local_data.get(key, default_data[key])
+            
+            # Safety check: If remote has 0 records but local has records, do not wipe local records blindly!
+            if len(remote_data.get("attendance", [])) == 0 and len(remote_data.get("cash_expenses", [])) == 0:
+                if len(local_data.get("attendance", [])) > 0 or len(local_data.get("cash_expenses", [])) > 0:
+                    return local_data
+
+            return remote_data
+    except:
+        pass
+        
+    for key in default_data:
+        if key not in local_data:
+            local_data[key] = default_data[key]
+    return local_data
 
 def save_data(data):
-    if not GITHUB_TOKEN or not GITHUB_REPO:
+    # Always save locally first as absolute backup
+    try:
         with open(FILE_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"Local save error: {e}")
+
+    if not GITHUB_TOKEN or not GITHUB_REPO:
         return
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "vnd.github+json"}
     
-    get_res = requests.get(url, headers=headers)
-    sha = get_res.json().get("sha") if get_res.status_code == 200 else None
+    try:
+        get_res = requests.get(url, headers=headers, timeout=10)
+        sha = get_res.json().get("sha") if get_res.status_code == 200 else None
 
-    json_str = json.dumps(data, indent=4, ensure_ascii=False)
-    encoded_content = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
+        json_str = json.dumps(data, indent=4, ensure_ascii=False)
+        encoded_content = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
 
-    payload = {
-        "message": "Auto-sync Shivam CRT master records",
-        "content": encoded_content,
-        "branch": GITHUB_BRANCH
-    }
-    if sha:
-        payload["sha"] = sha
+        payload = {
+            "message": "Auto-sync Shivam CRT master records safely",
+            "content": encoded_content,
+            "branch": GITHUB_BRANCH
+        }
+        if sha:
+            payload["sha"] = sha
 
-    requests.put(url, headers=headers, json=payload)
+        requests.put(url, headers=headers, json=payload, timeout=15)
+    except Exception as e:
+        print(f"GitHub sync error: {e}")
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -376,6 +395,9 @@ def export_pdf():
 
     table_data = [["Sr", "Date", "Name", "Card", "Role", "In", "Out", "Sig", "Desc", "Amount", "Conv", "Total"]]
     for idx, a in enumerate(data.get("attendance", []), 1):
+        amt_val = a.get('amount', 0)
+        conv_val = a.get('conveyance', 0)
+        tot_val = amt_val + conv_val
         table_data.append([
             str(idx),
             str(a.get("date", "")),
@@ -386,9 +408,9 @@ def export_pdf():
             str(a.get("out_time", "")),
             str(a.get("signature", "")),
             str(a.get("description", "")),
-            f"Rs {a.get('amount', 0)}",
-            f"Rs {a.get('conveyance', 0)}",
-            f"Rs {a.get('amount', 0) + a.get('conveyance', 0)}"
+            f"Rs {amt_val:,.0f}",
+            f"Rs {conv_val:,.0f}",
+            f"Rs {tot_val:,.0f}"
         ])
 
     t = Table(table_data, colWidths=[25, 65, 95, 60, 80, 50, 50, 40, 90, 60, 60, 65])
@@ -471,11 +493,7 @@ def export_cash_pdf():
     elements.append(Paragraph("Shivam CRT - Cash Expenses Master Ledger", title_style))
     elements.append(Spacer(1, 10))
 
-    # Group cash expenses by date
     cash_expenses = data.get("cash_expenses", [])
-    
-    # Sort or iterate grouped by date
-    # Let's organize data by date groups
     grouped_cash = {}
     for c in cash_expenses:
         d = c.get("date", "Unspecified Date")
@@ -490,16 +508,15 @@ def export_cash_pdf():
         date_total = 0
         
         for idx, c in enumerate(items, 1):
-            date_total += c.get('amount', 0)
+            amt_val = c.get('amount', 0)
+            date_total += amt_val
             
-            # Format attachments column content (text + images if possible)
             att_flowables = []
             atts = c.get("attachments", [])
             if atts:
                 for att in atts:
                     fname = att.get("file_name", "")
                     att_flowables.append(Paragraph(f"• {fname}", ParagraphStyle('AttText', fontSize=7, textColor=colors.HexColor('#1e293b'))))
-                    # Try embedding image if it's an image
                     fdata = att.get("file_data", "")
                     if fdata and (fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))):
                         try:
@@ -517,7 +534,7 @@ def export_cash_pdf():
                 str(idx),
                 str(c.get("pay_to", "")),
                 str(c.get("description", "")),
-                f"Rs {c.get('amount', 0)}",
+                f"Rs {amt_val:,.0f}",
                 att_flowables
             ])
 
@@ -537,8 +554,7 @@ def export_cash_pdf():
         ]))
         elements.append(t)
         
-        # Subtotal paragraph for the date
-        elements.append(Paragraph(f"<b>Subtotal for {d}: Rs {date_total}</b>", ParagraphStyle('SubTotalStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#047857'), alignment=2, spaceBefore=4, spaceAfter=10)))
+        elements.append(Paragraph(f"<b>Subtotal for {d}: Rs {date_total:,.0f}</b>", ParagraphStyle('SubTotalStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#047857'), alignment=2, spaceBefore=4, spaceAfter=10)))
         elements.append(Spacer(1, 5))
 
     doc.build(elements)
@@ -623,7 +639,6 @@ DASHBOARD_HTML = """
 <body class="bg-gray-950 text-gray-100 font-sans transition-colors duration-200" id="bodyTheme">
     <div class="flex h-screen overflow-hidden">
         
-        <!-- SIDEBAR -->
         <div class="hidden md:flex flex-col w-64 bg-gray-900 border-r border-gray-800 p-6 sidebar-panel" id="sidebarPanel">
             <h1 class="text-2xl font-black text-indigo-400 mb-1 tracking-wider">⚡ Shivam CRT</h1>
             <p class="text-xs text-gray-400 mb-6 font-mono">Operations Portal</p>
@@ -640,7 +655,6 @@ DASHBOARD_HTML = """
             </nav>
         </div>
 
-        <!-- MAIN CONTAINER -->
         <div class="flex-1 flex flex-col overflow-y-auto">
             <header class="bg-gray-900 border-b border-gray-800 p-4 flex justify-between items-center header-panel" id="headerPanel">
                 <h1 class="text-lg font-black text-indigo-400">⚡ Shivam CRT</h1>
@@ -650,7 +664,6 @@ DASHBOARD_HTML = """
                 </div>
             </header>
 
-            <!-- MOBILE NAV -->
             <div class="flex md:hidden bg-gray-900 p-2 overflow-x-auto space-x-2 border-b border-gray-800 shrink-0">
                 <a href="/?action=dashboard" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'dashboard' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Dashboard</a>
                 <a href="/?action=attendance" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'attendance' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Attendance</a>
@@ -667,19 +680,19 @@ DASHBOARD_HTML = """
                     <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Amount Allocated</p>
-                            <h3 class="text-xl font-black text-indigo-400 mt-1">₹{{ total_amount }}</h3>
+                            <h3 class="text-xl font-black text-indigo-400 mt-1">₹<span class="fmt-num">{{ total_amount }}</span></h3>
                         </div>
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Conveyance</p>
-                            <h3 class="text-xl font-black text-amber-400 mt-1">₹{{ total_conveyance }}</h3>
+                            <h3 class="text-xl font-black text-amber-400 mt-1">₹<span class="fmt-num">{{ total_conveyance }}</span></h3>
                         </div>
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Expenses</p>
-                            <h3 class="text-xl font-black text-red-400 mt-1">₹{{ total_expenses }}</h3>
+                            <h3 class="text-xl font-black text-red-400 mt-1">₹<span class="fmt-num">{{ total_expenses }}</span></h3>
                         </div>
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Cash Expenses</p>
-                            <h3 class="text-xl font-black text-emerald-400 mt-1">₹{{ total_cash_expenses }}</h3>
+                            <h3 class="text-xl font-black text-emerald-400 mt-1">₹<span class="fmt-num">{{ total_cash_expenses }}</span></h3>
                         </div>
                     </div>
 
@@ -753,7 +766,6 @@ DASHBOARD_HTML = """
                         </form>
                     </div>
 
-                    <!-- ATTENDANCE TABLE WITH DATE-WISE GROUPING -->
                     <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <h3 class="font-bold dynamic-text">📋 Date-Wise Grouped Attendance Ledger</h3>
@@ -798,18 +810,16 @@ DASHBOARD_HTML = """
                                     {% for a in filtered_attendance %}
                                         {% if a.date != ns.current_date %}
                                             {% if not loop.first %}
-                                            <!-- Date Subtotal Row -->
                                             <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                                 <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
-                                                <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
-                                                <td class="p-2.5 text-amber-400">₹{{ ns.date_conv }}</td>
-                                                <td colspan="3" class="p-2.5 text-emerald-400">₹{{ ns.date_amt + ns.date_conv }}</td>
+                                                <td class="p-2.5 text-gray-200">₹<span class="fmt-num">{{ ns.date_amt }}</span></td>
+                                                <td class="p-2.5 text-amber-400">₹<span class="fmt-num">{{ ns.date_conv }}</span></td>
+                                                <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ ns.date_amt + ns.date_conv }}</span></td>
                                             </tr>
                                             {% endif %}
                                             {% set ns.current_date = a.date %}
                                             {% set ns.date_amt = a.amount %}
                                             {% set ns.date_conv = a.conveyance %}
-                                            <!-- Date Group Header -->
                                             <tr class="bg-indigo-900/40 text-indigo-400 font-bold">
                                                 <td colspan="13" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ a.date or 'Unspecified Date' }}</td>
                                             </tr>
@@ -829,9 +839,9 @@ DASHBOARD_HTML = """
                                             <span class="px-2 py-0.5 rounded text-[10px] {% if a.signature == 'Yes' %}bg-emerald-500/10 text-emerald-400{% elif a.signature == 'No' %}bg-red-500/10 text-red-400{% else %}bg-amber-500/10 text-amber-400{% endif %}">{{ a.signature }}</span>
                                         </td>
                                         <td class="p-3 border-r border-gray-800 text-gray-300">{{ a.description }}</td>
-                                        <td class="p-3 border-r border-gray-800 text-gray-200">₹{{ a.amount }}</td>
-                                        <td class="p-3 border-r border-gray-800 text-amber-400">₹{{ a.conveyance }}</td>
-                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹{{ a.amount + a.conveyance }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-200">₹<span class="fmt-num">{{ a.amount }}</span></td>
+                                        <td class="p-3 border-r border-gray-800 text-amber-400">₹<span class="fmt-num">{{ a.conveyance }}</span></td>
+                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹<span class="fmt-num">{{ a.amount + a.conveyance }}</span></td>
                                         <td class="p-3 border-r border-gray-800">
                                             {% if a.attachments %}
                                                 <div class="flex flex-col space-y-1">
@@ -849,12 +859,11 @@ DASHBOARD_HTML = """
                                         </td>
                                     </tr>
                                         {% if loop.last and filtered_attendance %}
-                                        <!-- Last Date Subtotal Row -->
                                         <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                             <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
-                                            <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
-                                            <td class="p-2.5 text-amber-400">₹{{ ns.date_conv }}</td>
-                                            <td colspan="3" class="p-2.5 text-emerald-400">₹{{ ns.date_amt + ns.date_conv }}</td>
+                                            <td class="p-2.5 text-gray-200">₹<span class="fmt-num">{{ ns.date_amt }}</span></td>
+                                            <td class="p-2.5 text-amber-400">₹<span class="fmt-num">{{ ns.date_conv }}</span></td>
+                                            <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ ns.date_amt + ns.date_conv }}</span></td>
                                         </tr>
                                         {% endif %}
                                     {% endfor %}
@@ -862,9 +871,9 @@ DASHBOARD_HTML = """
                                 <tfoot>
                                     <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
                                         <td colspan="8" class="p-3 text-right uppercase tracking-wider text-indigo-400">Grand Total Sum:</td>
-                                        <td class="p-3 border-r border-gray-700 text-gray-200">₹{{ filtered_total_amount }}</td>
-                                        <td class="p-3 border-r border-gray-700 text-amber-400">₹{{ filtered_total_conveyance }}</td>
-                                        <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_grand_total }}</td>
+                                        <td class="p-3 border-r border-gray-700 text-gray-200">₹<span class="fmt-num">{{ filtered_total_amount }}</span></td>
+                                        <td class="p-3 border-r border-gray-700 text-amber-400">₹<span class="fmt-num">{{ filtered_total_conveyance }}</span></td>
+                                        <td colspan="3" class="p-3 text-emerald-400">₹<span class="fmt-num">{{ filtered_grand_total }}</span></td>
                                     </tr>
                                 </tfoot>
                             </table>
@@ -913,7 +922,7 @@ DASHBOARD_HTML = """
                                     <tr class="hover:bg-gray-800/30">
                                         <td class="p-3 font-semibold text-indigo-400">{{ e.category }}</td>
                                         <td class="p-3 text-gray-300">{{ e.date }}</td>
-                                        <td class="p-3 text-red-400 font-bold">₹{{ e.amount }}</td>
+                                        <td class="p-3 text-red-400 font-bold">₹<span class="fmt-num">{{ e.amount }}</span></td>
                                         <td class="p-3 text-center">
                                             <a href="/delete/expense/{{ e.id }}" onclick="return confirm('Confirm delete expense?');" class="text-red-400 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold">Delete</a>
                                         </td>
@@ -961,7 +970,6 @@ DASHBOARD_HTML = """
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <h3 class="font-bold dynamic-text">💵 Date-Wise Grouped Cash Expense Ledger</h3>
                             
-                            <!-- Search & Export Controls for Cash Expense -->
                             <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
                                 <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
                                     <input type="hidden" name="action" value="cash_expenses">
@@ -996,15 +1004,13 @@ DASHBOARD_HTML = """
                                     {% for c in filtered_cash_expenses %}
                                         {% if c.date != c_ns.current_date %}
                                             {% if not loop.first %}
-                                            <!-- Cash Date Subtotal Row -->
                                             <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                                 <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
-                                                <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
+                                                <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ c_ns.date_amt }}</span></td>
                                             </tr>
                                             {% endif %}
                                             {% set c_ns.current_date = c.date %}
                                             {% set c_ns.date_amt = c.amount %}
-                                            <!-- Cash Date Group Header -->
                                             <tr class="bg-emerald-900/40 text-emerald-400 font-bold">
                                                 <td colspan="7" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ c.date or 'Unspecified Date' }}</td>
                                             </tr>
@@ -1017,7 +1023,7 @@ DASHBOARD_HTML = """
                                         <td class="p-3 border-r border-gray-800 text-gray-300">{{ c.date }}</td>
                                         <td class="p-3 border-r border-gray-800 font-bold text-indigo-400">{{ c.pay_to }}</td>
                                         <td class="p-3 border-r border-gray-800 text-gray-200">{{ c.description }}</td>
-                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹{{ c.amount }}</td>
+                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹<span class="fmt-num">{{ c.amount }}</span></td>
                                         <td class="p-3 border-r border-gray-800">
                                             {% if c.attachments %}
                                                 <div class="flex flex-col space-y-1">
@@ -1035,10 +1041,9 @@ DASHBOARD_HTML = """
                                         </td>
                                     </tr>
                                         {% if loop.last and filtered_cash_expenses %}
-                                        <!-- Last Cash Date Subtotal Row -->
                                         <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                             <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
-                                            <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
+                                            <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ c_ns.date_amt }}</span></td>
                                         </tr>
                                         {% endif %}
                                     {% endfor %}
@@ -1046,7 +1051,7 @@ DASHBOARD_HTML = """
                                 <tfoot>
                                     <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
                                         <td colspan="4" class="p-3 text-right uppercase tracking-wider text-emerald-400">Grand Total Sum:</td>
-                                        <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_cash_total }}</td>
+                                        <td colspan="3" class="p-3 text-emerald-400">₹<span class="fmt-num">{{ filtered_cash_total }}</span></td>
                                     </tr>
                                 </tfoot>
                             </table>
@@ -1059,7 +1064,6 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
-    <!-- EDIT ATTENDANCE MODAL -->
     <div id="editModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button type="button" onclick="closeEditModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
@@ -1091,7 +1095,6 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
-    <!-- EDIT CASH EXPENSE MODAL -->
     <div id="editCashModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button type="button" onclick="closeEditCashModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
@@ -1117,7 +1120,6 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
-    <!-- FILE ZOOM MODAL -->
     <div id="fileModal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-3xl p-4 shadow-2xl relative flex flex-col items-center">
             <button onclick="closeFileViewer()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg z-10">✕</button>
@@ -1132,6 +1134,14 @@ DASHBOARD_HTML = """
             if (savedTheme === 'light') {
                 applyLightTheme();
             }
+            
+            // Format numbers with comma automatically
+            document.querySelectorAll('.fmt-num').forEach(el => {
+                const val = parseFloat(el.innerText.replace(/,/g, ''));
+                if (!isNaN(val)) {
+                    el.innerText = val.toLocaleString('en-IN');
+                }
+            });
         });
 
         function toggleTheme() {
@@ -1259,7 +1269,7 @@ DASHBOARD_HTML = """
             document.getElementById('fileModalTitle').innerText = "Viewing: " + fileName;
             container.innerHTML = '';
             
-            if (fileName.toLowerCase().endsWith('.pdf')) {
+            if (fileName.toLowerCase().endswith('.pdf')) {
                 container.innerHTML = `<iframe src="${dataUri}" class="w-full h-[70vh] rounded border border-gray-700"></iframe>`;
             } else {
                 container.innerHTML = `<img src="${dataUri}" class="max-w-full max-h-[70vh] object-contain rounded cursor-zoom-in" onclick="this.classList.toggle('scale-125')">`;
