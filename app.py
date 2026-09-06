@@ -1,16 +1,33 @@
-from flask import Flask, render_template_string, request, redirect, url_for, session
+from flask import Flask, render_template_string, request, redirect, url_for, session, Response
 import json
 import os
 import base64
 import requests
 from datetime import datetime
+import io
+
+# Optional imports for Excel and PDF exports
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    EXCEL_SUPPORT = True
+except ImportError:
+    EXCEL_SUPPORT = False
+
+try:
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
 
 app = Flask(__name__)
 app.secret_key = "shivam_crt_secure_master_key_2026"
 
-# Updated GitHub API Configurations (securely loaded via Environment Variables)
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPO = os.environ.get("GITHUB_REPO")  # e.g. "username/repo-name"
+GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 FILE_PATH = "shivam_crt_data.json"
 
@@ -108,6 +125,7 @@ def index():
     data.setdefault("expenses", [])
 
     action = request.args.get("action", "dashboard")
+    search_query = request.args.get("search", "").strip().lower()
 
     if request.method == "POST":
         form_type = request.form.get("form_type")
@@ -151,6 +169,18 @@ def index():
                     a["amount"] = int(request.form.get("amount", 0))
                     a["conveyance"] = int(request.form.get("conveyance", 0))
                     
+                    # Handle existing attachments removal if requested via form checkboxes or hidden lists
+                    existing_atts = a.get("attachments", [])
+                    retained_indices = request.form.getlist("keep_attachments")
+                    retained_atts = [existing_atts[int(i)] for i in retained_indices if int(i) < len(existing_atts)]
+                    
+                    # Handle legacy single file if present and not explicitly dropped
+                    if "file_name" in a and not retained_atts and "keep_legacy" in request.form:
+                        pass # keep legacy
+                    elif "file_name" in a and "keep_legacy" not in request.form:
+                        a.pop("file_name", None)
+                        a.pop("file_data", None)
+
                     uploaded_files = request.files.getlist("attachments")
                     new_attachments = []
                     for uploaded_file in uploaded_files:
@@ -160,9 +190,7 @@ def index():
                             file_data = base64.b64encode(file_bytes).decode("utf-8")
                             new_attachments.append({"file_name": file_name, "file_data": file_data})
                     
-                    if new_attachments:
-                        a.setdefault("attachments", [])
-                        a["attachments"].extend(new_attachments)
+                    a["attachments"] = retained_atts + new_attachments
             save_data(data)
             return redirect(url_for("index", action="attendance"))
 
@@ -177,6 +205,22 @@ def index():
             save_data(data)
             return redirect(url_for("index", action="expenses"))
 
+    # Filtering data for search
+    filtered_attendance = data["attendance"]
+    if search_query:
+        filtered_attendance = [
+            a for a in data["attendance"] 
+            if search_query in str(a.get("name", "")).lower() or
+               search_query in str(a.get("card_number", "")).lower() or
+               search_query in str(a.get("role", "")).lower() or
+               search_query in str(a.get("in_time", "")).lower() or
+               search_query in str(a.get("out_time", "")).lower() or
+               search_query in str(a.get("signature", "")).lower() or
+               search_query in str(a.get("amount", "")).lower() or
+               search_query in str(a.get("conveyance", "")).lower() or
+               search_query in str(a.get("amount", 0) + a.get("conveyance", 0)).lower()
+        ]
+
     total_amount = sum(a.get("amount", 0) for a in data["attendance"])
     total_conveyance = sum(a.get("conveyance", 0) for a in data["attendance"])
     total_expenses = sum(e.get("amount", 0) for e in data["expenses"])
@@ -184,11 +228,111 @@ def index():
     return render_template_string(
         DASHBOARD_HTML,
         data=data,
+        filtered_attendance=filtered_attendance,
         action=action,
+        search_query=search_query,
         sources_status="GitHub API Synced" if (GITHUB_TOKEN and GITHUB_REPO) else "Local Storage Mode",
         total_amount=total_amount,
         total_conveyance=total_conveyance,
         total_expenses=total_expenses
+    )
+
+@app.route("/export/excel")
+def export_excel():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    data = load_data()
+    
+    if not EXCEL_SUPPORT:
+        return "openpyxl library not installed on server.", 400
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Attendance Ledger"
+
+    headers = ["Sr #", "Name", "Card No", "Role", "In Time", "Out Time", "Signature", "Amount (₹)", "Conveyance (₹)", "Total (₹)"]
+    ws.append(headers)
+
+    for idx, a in enumerate(data.get("attendance", []), 1):
+        ws.append([
+            idx,
+            a.get("name", ""),
+            a.get("card_number", ""),
+            a.get("role", ""),
+            a.get("in_time", ""),
+            a.get("out_time", ""),
+            a.get("signature", ""),
+            a.get("amount", 0),
+            a.get("conveyance", 0),
+            a.get("amount", 0) + a.get("conveyance", 0)
+        ])
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return Response(
+        output,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Attendance_Ledger.xlsx"}
+    )
+
+@app.route("/export/pdf")
+def export_pdf():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    data = load_data()
+
+    if not PDF_SUPPORT:
+        return "reportlab library not installed on server.", 400
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    elements = []
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#6366f1'), spaceAfter=12)
+
+    elements.append(Paragraph("Shivam CRT - Attendance & Operations Master Ledger", title_style))
+    elements.append(Spacer(1, 10))
+
+    table_data = [["Sr", "Name", "Card No", "Role", "In", "Out", "Sig", "Amount", "Conv", "Total"]]
+    for idx, a in enumerate(data.get("attendance", []), 1):
+        table_data.append([
+            str(idx),
+            str(a.get("name", "")),
+            str(a.get("card_number", "")),
+            str(a.get("role", "")),
+            str(a.get("in_time", "")),
+            str(a.get("out_time", "")),
+            str(a.get("signature", "")),
+            f"Rs {a.get('amount', 0)}",
+            f"Rs {a.get('conveyance', 0)}",
+            f"Rs {a.get('amount', 0) + a.get('conveyance', 0)}"
+        ])
+
+    t = Table(table_data, colWidths=[30, 110, 80, 100, 60, 60, 50, 70, 70, 75])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e1b4b')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8fafc')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,1), (-1,-1), 8),
+    ]))
+
+    elements.append(t)
+    doc.build(elements)
+    buffer.seek(0)
+
+    return Response(
+        buffer,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Attendance_Ledger.pdf"}
     )
 
 @app.route("/delete/<string:category>/<int:item_id>")
@@ -375,11 +519,28 @@ DASHBOARD_HTML = """
                         </form>
                     </div>
 
-                    <!-- EXCEL-LIKE ATTENDANCE TABLE -->
+                    <!-- EXCEL-LIKE ATTENDANCE TABLE WITH SEARCH & EXPORT -->
                     <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
-                        <div class="p-4 border-b border-gray-800 flex justify-between items-center">
+                        <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <h3 class="font-bold dynamic-text">📋 Attendance & Operations Excel Ledger</h3>
+                            
+                            <!-- Search & Export Controls -->
+                            <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                                <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
+                                    <input type="hidden" name="action" value="attendance">
+                                    <input type="text" name="search" value="{{ search_query }}" placeholder="Search name, card, role..." class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-400 w-full sm:w-64">
+                                    <button type="submit" class="px-3 py-1.5 bg-indigo-500 text-gray-950 font-bold rounded-xl text-xs hover:bg-indigo-600 transition">Search</button>
+                                    {% if search_query %}
+                                        <a href="/?action=attendance" class="px-2 py-1.5 bg-gray-700 text-gray-300 rounded-xl text-xs hover:bg-gray-600">Clear</a>
+                                    {% endif %}
+                                </form>
+                                <div class="flex items-center gap-1 border-l border-gray-700 pl-2">
+                                    <a href="/export/excel" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1">📊 Excel</a>
+                                    <a href="/export/pdf" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1">📄 PDF</a>
+                                </div>
+                            </div>
                         </div>
+
                         <div class="overflow-x-auto">
                             <table class="w-full text-left border-collapse text-xs">
                                 <thead>
@@ -399,7 +560,7 @@ DASHBOARD_HTML = """
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-gray-800 font-mono">
-                                    {% for a in data.attendance %}
+                                    {% for a in filtered_attendance %}
                                     <tr class="hover:bg-gray-800/30 transition">
                                         <td class="p-3 border-r border-gray-800">{{ loop.index }}</td>
                                         <td class="p-3 border-r border-gray-800 font-bold text-indigo-400">{{ a.name }}</td>
@@ -496,7 +657,7 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
-    <!-- EDIT MODAL -->
+    <!-- EDIT MODAL WITH ATTACHMENT CHECKLIST MANAGER -->
     <div id="editModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button type="button" onclick="closeEditModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
@@ -513,7 +674,16 @@ DASHBOARD_HTML = """
                     <div><label class="text-xs text-gray-400">Signature</label><select name="signature" id="editSig" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"><option value="Yes">Yes</option><option value="No">No</option><option value="Mistake">Mistake</option></select></div>
                     <div><label class="text-xs text-gray-400">Amount (₹)</label><input type="number" name="amount" id="editAmount" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
                     <div><label class="text-xs text-gray-400">Conveyance (₹)</label><input type="number" name="conveyance" id="editConveyance" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Add More Files (PDF/Images)</label><input type="file" name="attachments" multiple accept=".pdf,image/*" class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300"></div>
+                    
+                    <!-- EXISTING ATTACHMENTS MANAGER CONTAINER -->
+                    <div class="sm:col-span-2 bg-gray-800/50 p-3 rounded-xl border border-gray-700">
+                        <label class="text-xs text-indigo-400 font-bold block mb-2">Manage Existing Uploaded Files (Uncheck to Remove):</label>
+                        <div id="editAttachmentsList" class="space-y-2 max-h-36 overflow-y-auto">
+                            <!-- Dynamically injected checkboxes -->
+                        </div>
+                    </div>
+
+                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Upload More Files (PDF/Images)</label><input type="file" name="attachments" multiple accept=".pdf,image/*" class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300"></div>
                 </div>
                 <button type="submit" class="w-full py-3 bg-indigo-500 hover:bg-indigo-600 text-gray-950 font-bold rounded-xl shadow-lg transition text-sm">Save Changes</button>
             </form>
@@ -522,7 +692,7 @@ DASHBOARD_HTML = """
 
     <!-- FILE ZOOM MODAL -->
     <div id="fileModal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
-        <div class="bg-900 border border-gray-800 rounded-2xl w-full max-w-3xl p-4 shadow-2xl relative flex flex-col items-center">
+        <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-3xl p-4 shadow-2xl relative flex flex-col items-center">
             <button onclick="closeFileViewer()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg z-10">✕</button>
             <h3 id="fileModalTitle" class="text-sm font-bold text-indigo-400 mb-2">Attachment Viewer</h3>
             <div id="fileViewerContainer" class="w-full max-h-[75vh] overflow-auto flex justify-center items-center p-2">
@@ -592,6 +762,32 @@ DASHBOARD_HTML = """
             document.getElementById('editSig').value = item.signature;
             document.getElementById('editAmount').value = item.amount;
             document.getElementById('editConveyance').value = item.conveyance;
+
+            // Render existing attachments checklist inside edit modal
+            const attListContainer = document.getElementById('editAttachmentsList');
+            attListContainer.innerHTML = '';
+            
+            let files = item.attachments || [];
+            if (files.length === 0 && item.file_name) {
+                files = [{ file_name: item.file_name, file_data: item.file_data }];
+            }
+
+            if (files.length === 0) {
+                attListContainer.innerHTML = '<p class="text-xs text-gray-400 italic">No files currently attached.</p>';
+            } else {
+                files.forEach((att, idx) => {
+                    const div = document.createElement('div');
+                    div.className = "flex items-center justify-between bg-gray-900 p-2 rounded-lg text-xs border border-gray-700";
+                    div.innerHTML = `
+                        <label class="flex items-center space-x-2 cursor-pointer truncate">
+                            <input type="checkbox" name="keep_attachments" value="${idx}" checked class="rounded bg-gray-800 border-gray-700 text-indigo-500 focus:ring-indigo-400">
+                            <span class="text-gray-300 truncate max-w-[200px]">📎 ${att.file_name}</span>
+                        </label>
+                        <button type="button" onclick="openFileViewer('data:application/octet-stream;base64,${att.file_data}', '${att.file_name}')" class="text-indigo-400 hover:underline px-2 py-1 bg-indigo-500/10 rounded">View</button>
+                    `;
+                    attListContainer.appendChild(div);
+                });
+            }
         }
 
         function closeEditModal() {
