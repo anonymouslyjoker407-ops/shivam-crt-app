@@ -35,66 +35,102 @@ def load_data():
     default_data = {
         "attendance": [],
         "expenses": [],
-        "cash_expenses": []
+        "cash_expenses": [],
+        "documents": []
     }
     
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        if not os.path.exists(FILE_PATH):
+    # Always ensure local file exists as a persistent safety backup
+    if not os.path.exists(FILE_PATH):
+        try:
             with open(FILE_PATH, "w", encoding="utf-8") as f:
                 json.dump(default_data, f, indent=4, ensure_ascii=False)
+        except Exception:
+            pass
+
+    # Load from local storage first as base safe state
+    local_data = default_data.copy()
+    if os.path.exists(FILE_PATH):
         try:
             with open(FILE_PATH, "r", encoding="utf-8") as f:
-                d = json.load(f)
-                for key in default_data:
-                    if key not in d:
-                        d[key] = default_data[key]
-                return d
-        except:
-            return default_data
+                local_data = json.load(f)
+        except Exception:
+            pass
 
+    # If GitHub is not configured, return local data safely
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        for key in default_data:
+            if key not in local_data:
+                local_data[key] = default_data[key]
+        return local_data
+
+    # Try fetching from GitHub
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "vnd.github+json"}
-    response = requests.get(url, headers=headers)
     
-    if response.status_code == 200:
-        try:
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
             file_content = response.json().get("content")
             decoded_content = base64.b64decode(file_content).decode("utf-8")
-            d = json.loads(decoded_content)
+            gh_data = json.loads(decoded_content)
+            
+            # Merge logic: if GitHub has data, ensure all keys exist
             for key in default_data:
-                if key not in d:
-                    d[key] = default_data[key]
-            return d
-        except:
-            return default_data
-    else:
-        save_data(default_data)
-        return default_data
+                if key not in gh_data:
+                    gh_data[key] = local_data.get(key, default_data[key])
+                elif not gh_data[key] and local_data.get(key):
+                    # Safety fallback: if github list is empty but local has records, keep local records
+                    gh_data[key] = local_data[key]
+            
+            # Sync back to local backup file
+            try:
+                with open(FILE_PATH, "w", encoding="utf-8") as f:
+                    json.dump(gh_data, f, indent=4, ensure_ascii=False)
+            except Exception:
+                pass
+                
+            return gh_data
+    except Exception:
+        pass
+        
+    # Fallback to local data if GitHub request fails
+    for key in default_data:
+        if key not in local_data:
+            local_data[key] = default_data[key]
+    return local_data
 
 def save_data(data):
-    if not GITHUB_TOKEN or not GITHUB_REPO:
+    # Always save safely to local backup file first to prevent any data loss
+    try:
         with open(FILE_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print("Local save error:", e)
+
+    if not GITHUB_TOKEN or not GITHUB_REPO:
         return
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "vnd.github+json"}
     
-    get_res = requests.get(url, headers=headers)
-    sha = get_res.json().get("sha") if get_res.status_code == 200 else None
+    try:
+        get_res = requests.get(url, headers=headers, timeout=10)
+        sha = get_res.json().get("sha") if get_res.status_code == 200 else None
 
-    json_str = json.dumps(data, indent=4, ensure_ascii=False)
-    encoded_content = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
+        json_str = json.dumps(data, indent=4, ensure_ascii=False)
+        encoded_content = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
 
-    payload = {
-        "message": "Auto-sync Shivam CRT master records",
-        "content": encoded_content,
-        "branch": GITHUB_BRANCH
-    }
-    if sha:
-        payload["sha"] = sha
+        payload = {
+            "message": "Auto-sync Shivam CRT master records safely",
+            "content": encoded_content,
+            "branch": GITHUB_BRANCH
+        }
+        if sha:
+            payload["sha"] = sha
 
-    requests.put(url, headers=headers, json=payload)
+        requests.put(url, headers=headers, json=payload, timeout=15)
+    except Exception as e:
+        print("GitHub sync error:", e)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -125,10 +161,12 @@ def index():
     data.setdefault("attendance", [])
     data.setdefault("expenses", [])
     data.setdefault("cash_expenses", [])
+    data.setdefault("documents", [])
 
     action = request.args.get("action", "dashboard")
     search_query = request.args.get("search", "").strip().lower()
     cash_search = request.args.get("cash_search", "").strip().lower()
+    doc_search = request.args.get("doc_search", "").strip().lower()
 
     if request.method == "POST":
         form_type = request.form.get("form_type")
@@ -259,6 +297,52 @@ def index():
             save_data(data)
             return redirect(url_for("index", action="cash_expenses"))
 
+        elif form_type == "add_document":
+            attachments = []
+            uploaded_files = request.files.getlist("attachments")
+            for uploaded_file in uploaded_files:
+                if uploaded_file and uploaded_file.filename:
+                    file_name = uploaded_file.filename
+                    file_bytes = uploaded_file.read()
+                    file_data = base64.b64encode(file_bytes).decode("utf-8")
+                    attachments.append({"file_name": file_name, "file_data": file_data})
+
+            new_doc = {
+                "id": max([d["id"] for d in data["documents"]], default=0) + 1,
+                "date": request.form.get("date", datetime.now().strftime("%Y-%m-%d")),
+                "data_input": request.form.get("data_input", ""),
+                "description": request.form.get("description", ""),
+                "attachments": attachments
+            }
+            data["documents"].append(new_doc)
+            save_data(data)
+            return redirect(url_for("index", action="documents"))
+
+        elif form_type == "edit_document":
+            d_id = int(request.form.get("record_id", 0))
+            for d in data["documents"]:
+                if d["id"] == d_id:
+                    d["date"] = request.form.get("date", d.get("date", ""))
+                    d["data_input"] = request.form.get("data_input", "")
+                    d["description"] = request.form.get("description", "")
+                    
+                    existing_atts = d.get("attachments", [])
+                    retained_indices = request.form.getlist("keep_attachments")
+                    retained_atts = [existing_atts[int(i)] for i in retained_indices if int(i) < len(existing_atts)]
+
+                    uploaded_files = request.files.getlist("attachments")
+                    new_attachments = []
+                    for uploaded_file in uploaded_files:
+                        if uploaded_file and uploaded_file.filename:
+                            file_name = uploaded_file.filename
+                            file_bytes = uploaded_file.read()
+                            file_data = base64.b64encode(file_bytes).decode("utf-8")
+                            new_attachments.append({"file_name": file_name, "file_data": file_data})
+                    
+                    d["attachments"] = retained_atts + new_attachments
+            save_data(data)
+            return redirect(url_for("index", action="documents"))
+
     # Filtering attendance
     filtered_attendance = data["attendance"]
     if search_query:
@@ -284,10 +368,22 @@ def index():
                cash_search in str(c.get("amount", "")).lower()
         ]
 
+    # Filtering documents
+    filtered_documents = data["documents"]
+    if doc_search:
+        filtered_documents = [
+            d for d in data["documents"]
+            if doc_search in str(d.get("date", "")).lower() or
+               doc_search in str(d.get("data_input", "")).lower() or
+               doc_search in str(d.get("description", "")).lower() or
+               any(doc_search in str(att.get("file_name", "")).lower() for att in d.get("attachments", []))
+        ]
+
     total_amount = sum(a.get("amount", 0) for a in data["attendance"])
     total_conveyance = sum(a.get("conveyance", 0) for a in data["attendance"])
     total_expenses = sum(e.get("amount", 0) for e in data["expenses"])
     total_cash_expenses = sum(c.get("amount", 0) for c in data["cash_expenses"])
+    total_documents = len(data["documents"])
 
     filtered_total_amount = sum(a.get("amount", 0) for a in filtered_attendance)
     filtered_total_conveyance = sum(a.get("conveyance", 0) for a in filtered_attendance)
@@ -299,14 +395,17 @@ def index():
         data=data,
         filtered_attendance=filtered_attendance,
         filtered_cash_expenses=filtered_cash_expenses,
+        filtered_documents=filtered_documents,
         action=action,
         search_query=search_query,
         cash_search=cash_search,
-        sources_status="GitHub API Synced" if (GITHUB_TOKEN and GITHUB_REPO) else "Local Storage Mode",
+        doc_search=doc_search,
+        sources_status="GitHub API Synced" if (GITHUB_TOKEN and GITHUB_REPO) else "Local Storage Safe Mode",
         total_amount=total_amount,
         total_conveyance=total_conveyance,
         total_expenses=total_expenses,
         total_cash_expenses=total_cash_expenses,
+        total_documents=total_documents,
         filtered_total_amount=filtered_total_amount,
         filtered_total_conveyance=filtered_total_conveyance,
         filtered_grand_total=filtered_grand_total,
@@ -326,7 +425,7 @@ def export_excel():
     ws = wb.active
     ws.title = "Attendance Ledger"
 
-    headers = ["Sr #", "Date", "Name", "Card No", "Role", "In Time", "Out Time", "Signature", "Description", "Amount (₹)", "Conveyance (₹)", "Total (₹)"]
+    headers = ["Sr #", "Date", "Name", "Card No", "Role", "In Time", "Out Time", "Signature", "Description", "Amount", "Conveyance", "Total"]
     ws.append(headers)
 
     for idx, a in enumerate(data.get("attendance", []), 1):
@@ -428,7 +527,7 @@ def export_cash_excel():
     ws = wb.active
     ws.title = "Cash Expenses"
 
-    headers = ["Sr #", "Date", "Pay To", "Description", "Amount (₹)", "Attachments Info"]
+    headers = ["Sr #", "Date", "Pay To", "Description", "Amount", "Attachments Info"]
     ws.append(headers)
 
     for idx, c in enumerate(data.get("cash_expenses", []), 1):
@@ -471,11 +570,7 @@ def export_cash_pdf():
     elements.append(Paragraph("Shivam CRT - Cash Expenses Master Ledger", title_style))
     elements.append(Spacer(1, 10))
 
-    # Group cash expenses by date
     cash_expenses = data.get("cash_expenses", [])
-    
-    # Sort or iterate grouped by date
-    # Let's organize data by date groups
     grouped_cash = {}
     for c in cash_expenses:
         d = c.get("date", "Unspecified Date")
@@ -492,14 +587,12 @@ def export_cash_pdf():
         for idx, c in enumerate(items, 1):
             date_total += c.get('amount', 0)
             
-            # Format attachments column content (text + images if possible)
             att_flowables = []
             atts = c.get("attachments", [])
             if atts:
                 for att in atts:
                     fname = att.get("file_name", "")
                     att_flowables.append(Paragraph(f"• {fname}", ParagraphStyle('AttText', fontSize=7, textColor=colors.HexColor('#1e293b'))))
-                    # Try embedding image if it's an image
                     fdata = att.get("file_data", "")
                     if fdata and (fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))):
                         try:
@@ -537,7 +630,6 @@ def export_cash_pdf():
         ]))
         elements.append(t)
         
-        # Subtotal paragraph for the date
         elements.append(Paragraph(f"<b>Subtotal for {d}: Rs {date_total}</b>", ParagraphStyle('SubTotalStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#047857'), alignment=2, spaceBefore=4, spaceAfter=10)))
         elements.append(Spacer(1, 5))
 
@@ -550,6 +642,127 @@ def export_cash_pdf():
         headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Cash_Expenses.pdf"}
     )
 
+@app.route("/export/doc_excel")
+def export_doc_excel():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    data = load_data()
+    
+    if not EXCEL_SUPPORT:
+        return "openpyxl library not installed on server.", 400
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Documents Master"
+
+    headers = ["Sr #", "Date", "Data Input", "Description", "Attachments Info"]
+    ws.append(headers)
+
+    for idx, d in enumerate(data.get("documents", []), 1):
+        att_names = ", ".join([att.get("file_name", "") for att in d.get("attachments", [])])
+        ws.append([
+            idx,
+            d.get("date", ""),
+            d.get("data_input", ""),
+            d.get("description", ""),
+            att_names if att_names else "No Files"
+        ])
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return Response(
+        output,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Documents.xlsx"}
+    )
+
+@app.route("/export/doc_pdf")
+def export_doc_pdf():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    data = load_data()
+
+    if not PDF_SUPPORT:
+        return "reportlab library not installed on server.", 400
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    elements = []
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#3b82f6'), spaceAfter=12)
+
+    elements.append(Paragraph("Shivam CRT - Documents Master Ledger", title_style))
+    elements.append(Spacer(1, 10))
+
+    documents = data.get("documents", [])
+    grouped_docs = {}
+    for d in documents:
+        dt = d.get("date", "Unspecified Date")
+        if dt not in grouped_docs:
+            grouped_docs[dt] = []
+        grouped_docs[dt].append(d)
+
+    for dt, items in grouped_docs.items():
+        elements.append(Paragraph(f"<b>Date Group: {dt}</b>", ParagraphStyle('DateGroupStyle', parent=styles['Heading3'], fontSize=11, textColor=colors.HexColor('#1e40af'), spaceBefore=8, spaceAfter=4)))
+        
+        table_data = [["Sr", "Data Input", "Description", "Attachments & Images"]]
+        
+        for idx, d in enumerate(items, 1):
+            att_flowables = []
+            atts = d.get("attachments", [])
+            if atts:
+                for att in atts:
+                    fname = att.get("file_name", "")
+                    att_flowables.append(Paragraph(f"• {fname}", ParagraphStyle('AttText', fontSize=7, textColor=colors.HexColor('#1e293b'))))
+                    fdata = att.get("file_data", "")
+                    if fdata and (fname.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))):
+                        try:
+                            img_bytes = base64.b64decode(fdata)
+                            img_io = io.BytesIO(img_bytes)
+                            rl_img = RLImage(img_io, width=80, height=60)
+                            att_flowables.append(rl_img)
+                            att_flowables.append(Spacer(1, 4))
+                        except:
+                            pass
+            else:
+                att_flowables = [Paragraph("No Files", ParagraphStyle('NoAtt', fontSize=7, textColor=colors.HexColor('#64748b')))]
+
+            table_data.append([
+                str(idx),
+                str(d.get("data_input", "")),
+                str(d.get("description", "")),
+                att_flowables
+            ])
+
+        t = Table(table_data, colWidths=[25, 140, 180, 195])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e40af')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,0), 8),
+            ('BOTTOMPADDING', (0,0), (-1,0), 5),
+            ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#eff6ff')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#bfdbfe')),
+            ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,1), (-1,-1), 7),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 10))
+
+    doc.build(elements)
+    buffer.seek(0)
+
+    return Response(
+        buffer,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Documents.pdf"}
+    )
+
 @app.route("/delete/<string:category>/<int:item_id>")
 def delete_item(category, item_id):
     if "user" not in session:
@@ -559,6 +772,7 @@ def delete_item(category, item_id):
     data.setdefault("attendance", [])
     data.setdefault("expenses", [])
     data.setdefault("cash_expenses", [])
+    data.setdefault("documents", [])
 
     if category == "attendance":
         data["attendance"] = [a for a in data["attendance"] if a["id"] != item_id]
@@ -569,6 +783,9 @@ def delete_item(category, item_id):
     elif category == "cash_expense":
         data["cash_expenses"] = [c for c in data["cash_expenses"] if c["id"] != item_id]
         redirect_action = "cash_expenses"
+    elif category == "document":
+        data["documents"] = [d for d in data["documents"] if d["id"] != item_id]
+        redirect_action = "documents"
     
     save_data(data)
     return redirect(url_for("index", action=redirect_action))
@@ -623,7 +840,6 @@ DASHBOARD_HTML = """
 <body class="bg-gray-950 text-gray-100 font-sans transition-colors duration-200" id="bodyTheme">
     <div class="flex h-screen overflow-hidden">
         
-        <!-- SIDEBAR -->
         <div class="hidden md:flex flex-col w-64 bg-gray-900 border-r border-gray-800 p-6 sidebar-panel" id="sidebarPanel">
             <h1 class="text-2xl font-black text-indigo-400 mb-1 tracking-wider">⚡ Shivam CRT</h1>
             <p class="text-xs text-gray-400 mb-6 font-mono">Operations Portal</p>
@@ -636,11 +852,11 @@ DASHBOARD_HTML = """
                 <a href="/?action=attendance" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'attendance' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">📋 Attendance & Ledger</a>
                 <a href="/?action=expenses" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'expenses' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">💡 Expenses Ledger</a>
                 <a href="/?action=cash_expenses" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'cash_expenses' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">💵 Cash Expense</a>
+                <a href="/?action=documents" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'documents' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">📁 Documents Tab</a>
                 <a href="/logout" class="block py-2.5 px-4 rounded-xl font-semibold text-red-400 hover:bg-red-500/10 transition mt-8">🚪 Log Out</a>
             </nav>
         </div>
 
-        <!-- MAIN CONTAINER -->
         <div class="flex-1 flex flex-col overflow-y-auto">
             <header class="bg-gray-900 border-b border-gray-800 p-4 flex justify-between items-center header-panel" id="headerPanel">
                 <h1 class="text-lg font-black text-indigo-400">⚡ Shivam CRT</h1>
@@ -650,12 +866,12 @@ DASHBOARD_HTML = """
                 </div>
             </header>
 
-            <!-- MOBILE NAV -->
             <div class="flex md:hidden bg-gray-900 p-2 overflow-x-auto space-x-2 border-b border-gray-800 shrink-0">
                 <a href="/?action=dashboard" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'dashboard' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Dashboard</a>
                 <a href="/?action=attendance" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'attendance' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Attendance</a>
                 <a href="/?action=expenses" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'expenses' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Expenses</a>
                 <a href="/?action=cash_expenses" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'cash_expenses' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Cash Expense</a>
+                <a href="/?action=documents" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'documents' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Documents</a>
             </div>
 
             <div class="p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-6">
@@ -689,6 +905,7 @@ DASHBOARD_HTML = """
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Attendance Records:</span> <strong class="text-indigo-400">{{ data.attendance|length }}</strong></li>
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Expense Categories:</span> <strong class="text-red-400">{{ data.expenses|length }}</strong></li>
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Cash Expense Records:</span> <strong class="text-emerald-400">{{ data.cash_expenses|length }}</strong></li>
+                            <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Document Records:</span> <strong class="text-blue-400">{{ data.documents|length }}</strong></li>
                         </ul>
                     </div>
                 </div>
@@ -753,7 +970,6 @@ DASHBOARD_HTML = """
                         </form>
                     </div>
 
-                    <!-- ATTENDANCE TABLE WITH DATE-WISE GROUPING -->
                     <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <h3 class="font-bold dynamic-text">📋 Date-Wise Grouped Attendance Ledger</h3>
@@ -798,7 +1014,6 @@ DASHBOARD_HTML = """
                                     {% for a in filtered_attendance %}
                                         {% if a.date != ns.current_date %}
                                             {% if not loop.first %}
-                                            <!-- Date Subtotal Row -->
                                             <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                                 <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
                                                 <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
@@ -809,7 +1024,6 @@ DASHBOARD_HTML = """
                                             {% set ns.current_date = a.date %}
                                             {% set ns.date_amt = a.amount %}
                                             {% set ns.date_conv = a.conveyance %}
-                                            <!-- Date Group Header -->
                                             <tr class="bg-indigo-900/40 text-indigo-400 font-bold">
                                                 <td colspan="13" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ a.date or 'Unspecified Date' }}</td>
                                             </tr>
@@ -849,7 +1063,6 @@ DASHBOARD_HTML = """
                                         </td>
                                     </tr>
                                         {% if loop.last and filtered_attendance %}
-                                        <!-- Last Date Subtotal Row -->
                                         <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                             <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
                                             <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
@@ -961,7 +1174,6 @@ DASHBOARD_HTML = """
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                             <h3 class="font-bold dynamic-text">💵 Date-Wise Grouped Cash Expense Ledger</h3>
                             
-                            <!-- Search & Export Controls for Cash Expense -->
                             <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
                                 <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
                                     <input type="hidden" name="action" value="cash_expenses">
@@ -996,7 +1208,6 @@ DASHBOARD_HTML = """
                                     {% for c in filtered_cash_expenses %}
                                         {% if c.date != c_ns.current_date %}
                                             {% if not loop.first %}
-                                            <!-- Cash Date Subtotal Row -->
                                             <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                                 <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
                                                 <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
@@ -1004,7 +1215,6 @@ DASHBOARD_HTML = """
                                             {% endif %}
                                             {% set c_ns.current_date = c.date %}
                                             {% set c_ns.date_amt = c.amount %}
-                                            <!-- Cash Date Group Header -->
                                             <tr class="bg-emerald-900/40 text-emerald-400 font-bold">
                                                 <td colspan="7" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ c.date or 'Unspecified Date' }}</td>
                                             </tr>
@@ -1035,7 +1245,6 @@ DASHBOARD_HTML = """
                                         </td>
                                     </tr>
                                         {% if loop.last and filtered_cash_expenses %}
-                                        <!-- Last Cash Date Subtotal Row -->
                                         <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                             <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
                                             <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
@@ -1053,13 +1262,102 @@ DASHBOARD_HTML = """
                         </div>
                     </div>
                 </div>
+
+                {% elif action == 'documents' %}
+                <div class="space-y-6">
+                    <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl card-panel">
+                        <h2 class="text-xl font-bold text-blue-400 mb-4">📁 Add Document Record</h2>
+                        <form method="POST" enctype="multipart/form-data" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <input type="hidden" name="form_type" value="add_document">
+                            <div>
+                                <label class="text-xs text-gray-400">Date</label>
+                                <input type="date" name="date" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400">Data Input</label>
+                                <input type="text" name="data_input" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Title or Document ID/Number">
+                            </div>
+                            <div class="sm:col-span-2">
+                                <label class="text-xs text-gray-400">Description</label>
+                                <input type="text" name="description" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Detailed notes about the document...">
+                            </div>
+                            <div class="sm:col-span-2">
+                                <label class="text-xs text-gray-400">Upload Multiple Photos & Files (PDF/Images - Multiple allowed)</label>
+                                <input type="file" name="attachments" multiple accept=".pdf,image/*" class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300">
+                            </div>
+                            <div class="sm:col-span-2">
+                                <button type="submit" class="w-full py-3 bg-blue-500 hover:bg-blue-600 font-bold text-gray-950 rounded-xl transition text-sm shadow-lg">Save Document</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
+                        <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
+                            <h3 class="font-bold dynamic-text">📁 Documents Master Ledger</h3>
+                            
+                            <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                                <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
+                                    <input type="hidden" name="action" value="documents">
+                                    <input type="text" name="doc_search" value="{{ doc_search }}" placeholder="Search documents..." class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-full sm:w-64">
+                                    <button type="submit" class="px-3 py-1.5 bg-blue-500 text-gray-950 font-bold rounded-xl text-xs hover:bg-blue-600 transition">Search</button>
+                                    {% if doc_search %}
+                                        <a href="/?action=documents" class="px-2 py-1.5 bg-gray-700 text-gray-300 rounded-xl text-xs hover:bg-gray-600">Clear</a>
+                                    {% endif %}
+                                </form>
+                                <div class="flex items-center gap-1 border-l border-gray-700 pl-2">
+                                    <a href="/export/doc_excel" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1">📊 Excel</a>
+                                    <a href="/export/doc_pdf" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1">📄 PDF</a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="bg-gray-800/80 text-gray-300 uppercase tracking-wider font-mono">
+                                        <th class="p-3 border-r border-gray-700">Sr #</th>
+                                        <th class="p-3 border-r border-gray-700">Date</th>
+                                        <th class="p-3 border-r border-gray-700">Data Input</th>
+                                        <th class="p-3 border-r border-gray-700">Description</th>
+                                        <th class="p-3 border-r border-gray-700">Files / Photos</th>
+                                        <th class="p-3 text-center">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-800 font-mono">
+                                    {% for d in filtered_documents %}
+                                    <tr class="hover:bg-gray-800/35 transition">
+                                        <td class="p-3 border-r border-gray-800">{{ loop.index }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-300">{{ d.date }}</td>
+                                        <td class="p-3 border-r border-gray-800 font-bold text-blue-400">{{ d.data_input }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-200">{{ d.description }}</td>
+                                        <td class="p-3 border-r border-gray-800">
+                                            {% if d.attachments %}
+                                                <div class="flex flex-col space-y-1">
+                                                    {% for att in d.attachments %}
+                                                    <button onclick="openFileViewer('data:application/octet-stream;base64,{{ att.file_data }}', '{{ att.file_name }}')" class="text-blue-400 underline hover:text-blue-300 text-[10px] text-left">📎 {{ att.file_name[:18] }}...</button>
+                                                    {% endfor %}
+                                                </div>
+                                            {% else %}
+                                                <span class="text-gray-500 text-[10px]">No Files</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="p-3 text-center space-x-2 whitespace-nowrap">
+                                            <button onclick='openEditDocModal({{ d|tojson|safe }})' class="text-blue-400 bg-blue-500/10 px-2 py-1 rounded text-[10px] font-bold cursor-pointer">Edit</button>
+                                            <a href="/delete/document/{{ d.id }}" onclick="return confirm('Confirm delete document record?');" class="text-red-400 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold inline-block">Delete</a>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
                 {% endif %}
 
             </div>
         </div>
     </div>
 
-    <!-- EDIT ATTENDANCE MODAL -->
     <div id="editModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button type="button" onclick="closeEditModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
@@ -1091,7 +1389,6 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
-    <!-- EDIT CASH EXPENSE MODAL -->
     <div id="editCashModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
             <button type="button" onclick="closeEditCashModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
@@ -1117,7 +1414,30 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
-    <!-- FILE ZOOM MODAL -->
+    <div id="editDocModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
+        <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button type="button" onclick="closeEditDocModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
+            <h3 class="text-xl font-bold text-blue-400 mb-4">Edit Document Record</h3>
+            <form id="editDocForm" method="POST" enctype="multipart/form-data" class="space-y-4">
+                <input type="hidden" name="form_type" value="edit_document">
+                <input type="hidden" name="record_id" id="editDocRecordId">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div><label class="text-xs text-gray-400">Date</label><input type="date" name="date" id="editDocDate" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Data Input</label><input type="text" name="data_input" id="editDocDataInput" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Description</label><input type="text" name="description" id="editDocDesc" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    
+                    <div class="sm:col-span-2 bg-gray-800/50 p-3 rounded-xl border border-gray-700">
+                        <label class="text-xs text-blue-400 font-bold block mb-2">Manage Existing Uploaded Files (Uncheck to Remove):</label>
+                        <div id="editDocAttachmentsList" class="space-y-2 max-h-36 overflow-y-auto"></div>
+                    </div>
+
+                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Upload More Files / Photos (PDF/Images)</label><input type="file" name="attachments" multiple accept=".pdf,image/*" class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300"></div>
+                </div>
+                <button type="submit" class="w-full py-3 bg-blue-500 hover:bg-blue-600 text-gray-950 font-bold rounded-xl shadow-lg transition text-sm">Save Changes</button>
+            </form>
+        </div>
+    </div>
+
     <div id="fileModal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-3xl p-4 shadow-2xl relative flex flex-col items-center">
             <button onclick="closeFileViewer()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg z-10">✕</button>
@@ -1253,13 +1573,48 @@ DASHBOARD_HTML = """
             document.getElementById('editCashModal').classList.add('hidden');
         }
 
+        function openEditDocModal(item) {
+            document.getElementById('editDocModal').classList.remove('hidden');
+            document.getElementById('editDocModal').classList.add('flex');
+            document.getElementById('editDocRecordId').value = item.id;
+            document.getElementById('editDocDate').value = item.date || '';
+            document.getElementById('editDocDataInput').value = item.data_input || '';
+            document.getElementById('editDocDesc').value = item.description || '';
+
+            const attListContainer = document.getElementById('editDocAttachmentsList');
+            attListContainer.innerHTML = '';
+            
+            let files = item.attachments || [];
+            if (files.length === 0) {
+                attListContainer.innerHTML = '<p class="text-xs text-gray-400 italic">No photos or files currently attached.</p>';
+            } else {
+                files.forEach((att, idx) => {
+                    const div = document.createElement('div');
+                    div.className = "flex items-center justify-between bg-gray-900 p-2 rounded-lg text-xs border border-gray-700";
+                    div.innerHTML = `
+                        <label class="flex items-center space-x-2 cursor-pointer truncate">
+                            <input type="checkbox" name="keep_attachments" value="${idx}" checked class="rounded bg-gray-800 border-gray-700 text-blue-500 focus:ring-blue-400">
+                            <span class="text-gray-300 truncate max-w-[200px]">📎 ${att.file_name}</span>
+                        </label>
+                        <button type="button" onclick="openFileViewer('data:application/octet-stream;base64,${att.file_data}', '${att.file_name}')" class="text-blue-400 hover:underline px-2 py-1 bg-blue-500/10 rounded">View</button>
+                    `;
+                    attListContainer.appendChild(div);
+                });
+            }
+        }
+
+        function closeEditDocModal() {
+            document.getElementById('editDocModal').classList.remove('flex');
+            document.getElementById('editDocModal').classList.add('hidden');
+        }
+
         function openFileViewer(dataUri, fileName) {
             const modal = document.getElementById('fileModal');
             const container = document.getElementById('fileViewerContainer');
             document.getElementById('fileModalTitle').innerText = "Viewing: " + fileName;
             container.innerHTML = '';
             
-            if (fileName.toLowerCase().endsWith('.pdf')) {
+            if (fileName.toLowerCase().endswith('.pdf')) {
                 container.innerHTML = `<iframe src="${dataUri}" class="w-full h-[70vh] rounded border border-gray-700"></iframe>`;
             } else {
                 container.innerHTML = `<img src="${dataUri}" class="max-w-full max-h-[70vh] object-contain rounded cursor-zoom-in" onclick="this.classList.toggle('scale-125')">`;
