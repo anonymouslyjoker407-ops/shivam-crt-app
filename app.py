@@ -35,85 +35,67 @@ def load_data():
     default_data = {
         "attendance": [],
         "expenses": [],
-        "cash_expenses": []
+        "cash_expenses": [],
+        "documents": []
     }
     
-    # Always load/fallback safely from local file if exists to prevent data wiping
-    local_data = default_data.copy()
-    if os.path.exists(FILE_PATH):
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        if not os.path.exists(FILE_PATH):
+            with open(FILE_PATH, "w", encoding="utf-8") as f:
+                json.dump(default_data, f, indent=4, ensure_ascii=False)
         try:
             with open(FILE_PATH, "r", encoding="utf-8") as f:
-                local_data = json.load(f)
+                d = json.load(f)
+                for key in default_data:
+                    if key not in d:
+                        d[key] = default_data[key]
+                return d
         except:
-            pass
-
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        for key in default_data:
-            if key not in local_data:
-                local_data[key] = default_data[key]
-        return local_data
+            return default_data
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "vnd.github+json"}
+    response = requests.get(url, headers=headers)
     
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
+    if response.status_code == 200:
+        try:
             file_content = response.json().get("content")
             decoded_content = base64.b64decode(file_content).decode("utf-8")
-            remote_data = json.loads(decoded_content)
-            
-            # Merge or ensure keys exist, preferring remote if valid, else fallback to local if remote is empty
+            d = json.loads(decoded_content)
             for key in default_data:
-                if key not in remote_data:
-                    remote_data[key] = local_data.get(key, default_data[key])
-            
-            # Safety check: If remote has 0 records but local has records, do not wipe local records blindly!
-            if len(remote_data.get("attendance", [])) == 0 and len(remote_data.get("cash_expenses", [])) == 0:
-                if len(local_data.get("attendance", [])) > 0 or len(local_data.get("cash_expenses", [])) > 0:
-                    return local_data
-
-            return remote_data
-    except:
-        pass
-        
-    for key in default_data:
-        if key not in local_data:
-            local_data[key] = default_data[key]
-    return local_data
+                if key not in d:
+                    d[key] = default_data[key]
+            return d
+        except:
+            return default_data
+    else:
+        save_data(default_data)
+        return default_data
 
 def save_data(data):
-    # Always save locally first as absolute backup
-    try:
+    if not GITHUB_TOKEN or not GITHUB_REPO:
         with open(FILE_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"Local save error: {e}")
-
-    if not GITHUB_TOKEN or not GITHUB_REPO:
         return
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "vnd.github+json"}
     
-    try:
-        get_res = requests.get(url, headers=headers, timeout=10)
-        sha = get_res.json().get("sha") if get_res.status_code == 200 else None
+    get_res = requests.get(url, headers=headers)
+    sha = get_res.json().get("sha") if get_res.status_code == 200 else None
 
-        json_str = json.dumps(data, indent=4, ensure_ascii=False)
-        encoded_content = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
+    json_str = json.dumps(data, indent=4, ensure_ascii=False)
+    encoded_content = base64.b64encode(json_str.encode("utf-8")).decode("utf-8")
 
-        payload = {
-            "message": "Auto-sync Shivam CRT master records safely",
-            "content": encoded_content,
-            "branch": GITHUB_BRANCH
-        }
-        if sha:
-            payload["sha"] = sha
+    payload = {
+        "message": "Auto-sync Shivam CRT master records",
+        "content": encoded_content,
+        "branch": GITHUB_BRANCH
+    }
+    if sha:
+        payload["sha"] = sha
 
-        requests.put(url, headers=headers, json=payload, timeout=15)
-    except Exception as e:
-        print(f"GitHub sync error: {e}")
+    requests.put(url, headers=headers, json=payload)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -144,10 +126,12 @@ def index():
     data.setdefault("attendance", [])
     data.setdefault("expenses", [])
     data.setdefault("cash_expenses", [])
+    data.setdefault("documents", [])
 
     action = request.args.get("action", "dashboard")
     search_query = request.args.get("search", "").strip().lower()
     cash_search = request.args.get("cash_search", "").strip().lower()
+    doc_search = request.args.get("doc_search", "").strip().lower()
 
     if request.method == "POST":
         form_type = request.form.get("form_type")
@@ -278,6 +262,43 @@ def index():
             save_data(data)
             return redirect(url_for("index", action="cash_expenses"))
 
+        elif form_type == "add_document":
+            file_name = ""
+            file_data = ""
+            uploaded_file = request.files.get("document_file")
+            if uploaded_file and uploaded_file.filename:
+                file_name = uploaded_file.filename
+                file_bytes = uploaded_file.read()
+                file_data = base64.b64encode(file_bytes).decode("utf-8")
+
+            new_doc = {
+                "id": max([d["id"] for d in data["documents"]], default=0) + 1,
+                "date": request.form.get("date", datetime.now().strftime("%Y-%m-%d")),
+                "title": request.form.get("title", ""),
+                "description": request.form.get("description", ""),
+                "file_name": file_name,
+                "file_data": file_data
+            }
+            data["documents"].append(new_doc)
+            save_data(data)
+            return redirect(url_for("index", action="documents"))
+
+        elif form_type == "edit_document":
+            d_id = int(request.form.get("record_id", 0))
+            for doc in data["documents"]:
+                if doc["id"] == d_id:
+                    doc["date"] = request.form.get("date", doc.get("date", ""))
+                    doc["title"] = request.form.get("title", "")
+                    doc["description"] = request.form.get("description", "")
+                    
+                    uploaded_file = request.files.get("document_file")
+                    if uploaded_file and uploaded_file.filename:
+                        doc["file_name"] = uploaded_file.filename
+                        file_bytes = uploaded_file.read()
+                        doc["file_data"] = base64.b64encode(file_bytes).decode("utf-8")
+            save_data(data)
+            return redirect(url_for("index", action="documents"))
+
     # Filtering attendance
     filtered_attendance = data["attendance"]
     if search_query:
@@ -303,10 +324,22 @@ def index():
                cash_search in str(c.get("amount", "")).lower()
         ]
 
+    # Filtering documents
+    filtered_documents = data["documents"]
+    if doc_search:
+        filtered_documents = [
+            d for d in data["documents"]
+            if doc_search in str(d.get("title", "")).lower() or
+               doc_search in str(d.get("description", "")).lower() or
+               doc_search in str(d.get("file_name", "")).lower() or
+               doc_search in str(d.get("date", "")).lower()
+        ]
+
     total_amount = sum(a.get("amount", 0) for a in data["attendance"])
     total_conveyance = sum(a.get("conveyance", 0) for a in data["attendance"])
     total_expenses = sum(e.get("amount", 0) for e in data["expenses"])
     total_cash_expenses = sum(c.get("amount", 0) for c in data["cash_expenses"])
+    total_documents = len(data["documents"])
 
     filtered_total_amount = sum(a.get("amount", 0) for a in filtered_attendance)
     filtered_total_conveyance = sum(a.get("conveyance", 0) for a in filtered_attendance)
@@ -318,14 +351,17 @@ def index():
         data=data,
         filtered_attendance=filtered_attendance,
         filtered_cash_expenses=filtered_cash_expenses,
+        filtered_documents=filtered_documents,
         action=action,
         search_query=search_query,
         cash_search=cash_search,
+        doc_search=doc_search,
         sources_status="GitHub API Synced" if (GITHUB_TOKEN and GITHUB_REPO) else "Local Storage Mode",
         total_amount=total_amount,
         total_conveyance=total_conveyance,
         total_expenses=total_expenses,
         total_cash_expenses=total_cash_expenses,
+        total_documents=total_documents,
         filtered_total_amount=filtered_total_amount,
         filtered_total_conveyance=filtered_total_conveyance,
         filtered_grand_total=filtered_grand_total,
@@ -395,9 +431,6 @@ def export_pdf():
 
     table_data = [["Sr", "Date", "Name", "Card", "Role", "In", "Out", "Sig", "Desc", "Amount", "Conv", "Total"]]
     for idx, a in enumerate(data.get("attendance", []), 1):
-        amt_val = a.get('amount', 0)
-        conv_val = a.get('conveyance', 0)
-        tot_val = amt_val + conv_val
         table_data.append([
             str(idx),
             str(a.get("date", "")),
@@ -408,9 +441,9 @@ def export_pdf():
             str(a.get("out_time", "")),
             str(a.get("signature", "")),
             str(a.get("description", "")),
-            f"Rs {amt_val:,.0f}",
-            f"Rs {conv_val:,.0f}",
-            f"Rs {tot_val:,.0f}"
+            f"Rs {a.get('amount', 0)}",
+            f"Rs {a.get('conveyance', 0)}",
+            f"Rs {a.get('amount', 0) + a.get('conveyance', 0)}"
         ])
 
     t = Table(table_data, colWidths=[25, 65, 95, 60, 80, 50, 50, 40, 90, 60, 60, 65])
@@ -508,9 +541,7 @@ def export_cash_pdf():
         date_total = 0
         
         for idx, c in enumerate(items, 1):
-            amt_val = c.get('amount', 0)
-            date_total += amt_val
-            
+            date_total += c.get('amount', 0)
             att_flowables = []
             atts = c.get("attachments", [])
             if atts:
@@ -534,7 +565,7 @@ def export_cash_pdf():
                 str(idx),
                 str(c.get("pay_to", "")),
                 str(c.get("description", "")),
-                f"Rs {amt_val:,.0f}",
+                f"Rs {c.get('amount', 0)}",
                 att_flowables
             ])
 
@@ -553,8 +584,7 @@ def export_cash_pdf():
             ('FONTSIZE', (0,1), (-1,-1), 7),
         ]))
         elements.append(t)
-        
-        elements.append(Paragraph(f"<b>Subtotal for {d}: Rs {date_total:,.0f}</b>", ParagraphStyle('SubTotalStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#047857'), alignment=2, spaceBefore=4, spaceAfter=10)))
+        elements.append(Paragraph(f"<b>Subtotal for {d}: Rs {date_total}</b>", ParagraphStyle('SubTotalStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#047857'), alignment=2, spaceBefore=4, spaceAfter=10)))
         elements.append(Spacer(1, 5))
 
     doc.build(elements)
@@ -575,6 +605,7 @@ def delete_item(category, item_id):
     data.setdefault("attendance", [])
     data.setdefault("expenses", [])
     data.setdefault("cash_expenses", [])
+    data.setdefault("documents", [])
 
     if category == "attendance":
         data["attendance"] = [a for a in data["attendance"] if a["id"] != item_id]
@@ -585,6 +616,9 @@ def delete_item(category, item_id):
     elif category == "cash_expense":
         data["cash_expenses"] = [c for c in data["cash_expenses"] if c["id"] != item_id]
         redirect_action = "cash_expenses"
+    elif category == "document":
+        data["documents"] = [d for d in data["documents"] if d["id"] != item_id]
+        redirect_action = "documents"
     
     save_data(data)
     return redirect(url_for("index", action=redirect_action))
@@ -651,6 +685,7 @@ DASHBOARD_HTML = """
                 <a href="/?action=attendance" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'attendance' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">📋 Attendance & Ledger</a>
                 <a href="/?action=expenses" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'expenses' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">💡 Expenses Ledger</a>
                 <a href="/?action=cash_expenses" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'cash_expenses' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">💵 Cash Expense</a>
+                <a href="/?action=documents" class="block py-2.5 px-4 rounded-xl font-semibold transition {% if action == 'documents' %}bg-indigo-500/10 text-indigo-400{% else %}text-gray-400 hover:bg-gray-800{% endif %}">📁 Documents</a>
                 <a href="/logout" class="block py-2.5 px-4 rounded-xl font-semibold text-red-400 hover:bg-red-500/10 transition mt-8">🚪 Log Out</a>
             </nav>
         </div>
@@ -669,6 +704,7 @@ DASHBOARD_HTML = """
                 <a href="/?action=attendance" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'attendance' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Attendance</a>
                 <a href="/?action=expenses" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'expenses' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Expenses</a>
                 <a href="/?action=cash_expenses" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'cash_expenses' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Cash Expense</a>
+                <a href="/?action=documents" class="px-3 py-1.5 text-xs font-semibold rounded-lg {% if action == 'documents' %}bg-indigo-500 text-gray-950{% else %}bg-gray-800 text-gray-300{% endif %} whitespace-nowrap">Documents</a>
             </div>
 
             <div class="p-4 sm:p-6 max-w-7xl mx-auto w-full space-y-6">
@@ -680,19 +716,19 @@ DASHBOARD_HTML = """
                     <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Amount Allocated</p>
-                            <h3 class="text-xl font-black text-indigo-400 mt-1">₹<span class="fmt-num">{{ total_amount }}</span></h3>
+                            <h3 class="text-xl font-black text-indigo-400 mt-1">₹{{ total_amount }}</h3>
                         </div>
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Conveyance</p>
-                            <h3 class="text-xl font-black text-amber-400 mt-1">₹<span class="fmt-num">{{ total_conveyance }}</span></h3>
+                            <h3 class="text-xl font-black text-amber-400 mt-1">₹{{ total_conveyance }}</h3>
                         </div>
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Expenses</p>
-                            <h3 class="text-xl font-black text-red-400 mt-1">₹<span class="fmt-num">{{ total_expenses }}</span></h3>
+                            <h3 class="text-xl font-black text-red-400 mt-1">₹{{ total_expenses }}</h3>
                         </div>
                         <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl card-panel">
                             <p class="text-xs text-gray-400 font-bold">Total Cash Expenses</p>
-                            <h3 class="text-xl font-black text-emerald-400 mt-1">₹<span class="fmt-num">{{ total_cash_expenses }}</span></h3>
+                            <h3 class="text-xl font-black text-emerald-400 mt-1">₹{{ total_cash_expenses }}</h3>
                         </div>
                     </div>
 
@@ -702,6 +738,7 @@ DASHBOARD_HTML = """
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Attendance Records:</span> <strong class="text-indigo-400">{{ data.attendance|length }}</strong></li>
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Expense Categories:</span> <strong class="text-red-400">{{ data.expenses|length }}</strong></li>
                             <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Cash Expense Records:</span> <strong class="text-emerald-400">{{ data.cash_expenses|length }}</strong></li>
+                            <li class="flex justify-between p-3 bg-gray-800/40 rounded-xl"><span>Total Saved Documents:</span> <strong class="text-blue-400">{{ total_documents }}</strong></li>
                         </ul>
                     </div>
                 </div>
@@ -812,9 +849,9 @@ DASHBOARD_HTML = """
                                             {% if not loop.first %}
                                             <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                                 <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
-                                                <td class="p-2.5 text-gray-200">₹<span class="fmt-num">{{ ns.date_amt }}</span></td>
-                                                <td class="p-2.5 text-amber-400">₹<span class="fmt-num">{{ ns.date_conv }}</span></td>
-                                                <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ ns.date_amt + ns.date_conv }}</span></td>
+                                                <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
+                                                <td class="p-2.5 text-amber-400">₹{{ ns.date_conv }}</td>
+                                                <td colspan="3" class="p-2.5 text-emerald-400">₹{{ ns.date_amt + ns.date_conv }}</td>
                                             </tr>
                                             {% endif %}
                                             {% set ns.current_date = a.date %}
@@ -839,9 +876,9 @@ DASHBOARD_HTML = """
                                             <span class="px-2 py-0.5 rounded text-[10px] {% if a.signature == 'Yes' %}bg-emerald-500/10 text-emerald-400{% elif a.signature == 'No' %}bg-red-500/10 text-red-400{% else %}bg-amber-500/10 text-amber-400{% endif %}">{{ a.signature }}</span>
                                         </td>
                                         <td class="p-3 border-r border-gray-800 text-gray-300">{{ a.description }}</td>
-                                        <td class="p-3 border-r border-gray-800 text-gray-200">₹<span class="fmt-num">{{ a.amount }}</span></td>
-                                        <td class="p-3 border-r border-gray-800 text-amber-400">₹<span class="fmt-num">{{ a.conveyance }}</span></td>
-                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹<span class="fmt-num">{{ a.amount + a.conveyance }}</span></td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-200">₹{{ a.amount }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-amber-400">₹{{ a.conveyance }}</td>
+                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹{{ a.amount + a.conveyance }}</td>
                                         <td class="p-3 border-r border-gray-800">
                                             {% if a.attachments %}
                                                 <div class="flex flex-col space-y-1">
@@ -861,9 +898,9 @@ DASHBOARD_HTML = """
                                         {% if loop.last and filtered_attendance %}
                                         <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
                                             <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
-                                            <td class="p-2.5 text-gray-200">₹<span class="fmt-num">{{ ns.date_amt }}</span></td>
-                                            <td class="p-2.5 text-amber-400">₹<span class="fmt-num">{{ ns.date_conv }}</span></td>
-                                            <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ ns.date_amt + ns.date_conv }}</span></td>
+                                            <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
+                                            <td class="p-2.5 text-amber-400">₹{{ ns.date_conv }}</td>
+                                            <td colspan="3" class="p-2.5 text-emerald-400">₹{{ ns.date_amt + ns.date_conv }}</td>
                                         </tr>
                                         {% endif %}
                                     {% endfor %}
@@ -871,9 +908,9 @@ DASHBOARD_HTML = """
                                 <tfoot>
                                     <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
                                         <td colspan="8" class="p-3 text-right uppercase tracking-wider text-indigo-400">Grand Total Sum:</td>
-                                        <td class="p-3 border-r border-gray-700 text-gray-200">₹<span class="fmt-num">{{ filtered_total_amount }}</span></td>
-                                        <td class="p-3 border-r border-gray-700 text-amber-400">₹<span class="fmt-num">{{ filtered_total_conveyance }}</span></td>
-                                        <td colspan="3" class="p-3 text-emerald-400">₹<span class="fmt-num">{{ filtered_grand_total }}</span></td>
+                                        <td class="p-3 border-r border-gray-700 text-gray-200">₹{{ filtered_total_amount }}</td>
+                                        <td class="p-3 border-r border-gray-700 text-amber-400">₹{{ filtered_total_conveyance }}</td>
+                                        <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_grand_total }}</td>
                                     </tr>
                                 </tfoot>
                             </table>
@@ -922,7 +959,7 @@ DASHBOARD_HTML = """
                                     <tr class="hover:bg-gray-800/30">
                                         <td class="p-3 font-semibold text-indigo-400">{{ e.category }}</td>
                                         <td class="p-3 text-gray-300">{{ e.date }}</td>
-                                        <td class="p-3 text-red-400 font-bold">₹<span class="fmt-num">{{ e.amount }}</span></td>
+                                        <td class="p-3 text-red-400 font-bold">₹{{ e.amount }}</td>
                                         <td class="p-3 text-center">
                                             <a href="/delete/expense/{{ e.id }}" onclick="return confirm('Confirm delete expense?');" class="text-red-400 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold">Delete</a>
                                         </td>
@@ -1006,7 +1043,7 @@ DASHBOARD_HTML = """
                                             {% if not loop.first %}
                                             <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                                 <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
-                                                <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ c_ns.date_amt }}</span></td>
+                                                <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
                                             </tr>
                                             {% endif %}
                                             {% set c_ns.current_date = c.date %}
@@ -1023,7 +1060,7 @@ DASHBOARD_HTML = """
                                         <td class="p-3 border-r border-gray-800 text-gray-300">{{ c.date }}</td>
                                         <td class="p-3 border-r border-gray-800 font-bold text-indigo-400">{{ c.pay_to }}</td>
                                         <td class="p-3 border-r border-gray-800 text-gray-200">{{ c.description }}</td>
-                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹<span class="fmt-num">{{ c.amount }}</span></td>
+                                        <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹{{ c.amount }}</td>
                                         <td class="p-3 border-r border-gray-800">
                                             {% if c.attachments %}
                                                 <div class="flex flex-col space-y-1">
@@ -1043,7 +1080,7 @@ DASHBOARD_HTML = """
                                         {% if loop.last and filtered_cash_expenses %}
                                         <tr class="bg-emerald-950/40 font-bold border-t-2 border-emerald-500/40">
                                             <td colspan="4" class="p-2.5 text-right text-emerald-300">Subtotal for {{ c_ns.current_date }}:</td>
-                                            <td colspan="3" class="p-2.5 text-emerald-400">₹<span class="fmt-num">{{ c_ns.date_amt }}</span></td>
+                                            <td colspan="3" class="p-2.5 text-emerald-400">₹{{ c_ns.date_amt }}</td>
                                         </tr>
                                         {% endif %}
                                     {% endfor %}
@@ -1051,9 +1088,98 @@ DASHBOARD_HTML = """
                                 <tfoot>
                                     <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
                                         <td colspan="4" class="p-3 text-right uppercase tracking-wider text-emerald-400">Grand Total Sum:</td>
-                                        <td colspan="3" class="p-3 text-emerald-400">₹<span class="fmt-num">{{ filtered_cash_total }}</span></td>
+                                        <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_cash_total }}</td>
                                     </tr>
                                 </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                {% elif action == 'documents' %}
+                <div class="space-y-6">
+                    <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl card-panel">
+                        <h2 class="text-xl font-bold text-blue-400 mb-4">📁 Upload & Manage Documents</h2>
+                        <form method="POST" enctype="multipart/form-data" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <input type="hidden" name="form_type" value="add_document">
+                            <div>
+                                <label class="text-xs text-gray-400">Date</label>
+                                <input type="date" name="date" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400">Document Title / Name</label>
+                                <input type="text" name="title" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="e.g. Agreement, Tax Form, Invoice">
+                            </div>
+                            <div class="sm:col-span-2">
+                                <label class="text-xs text-gray-400">Description / Details</label>
+                                <input type="text" name="description" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Write description about this document...">
+                            </div>
+                            <div class="sm:col-span-2">
+                                <label class="text-xs text-gray-400">Upload File (PDF, Excel, Images, etc.)</label>
+                                <input type="file" name="document_file" required class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300">
+                            </div>
+                            <div class="sm:col-span-2">
+                                <button type="submit" class="w-full py-3 bg-blue-500 hover:bg-blue-600 font-bold text-gray-950 rounded-xl transition text-sm shadow-lg">Save Document Record</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
+                        <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
+                            <h3 class="font-bold dynamic-text">📂 Saved Documents Repository</h3>
+                            
+                            <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
+                                <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
+                                    <input type="hidden" name="action" value="documents">
+                                    <input type="text" name="doc_search" value="{{ doc_search }}" placeholder="Search by title, description..." class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-full sm:w-64">
+                                    <button type="submit" class="px-3 py-1.5 bg-blue-500 text-gray-950 font-bold rounded-xl text-xs hover:bg-blue-600 transition">Search</button>
+                                    {% if doc_search %}
+                                        <a href="/?action=documents" class="px-2 py-1.5 bg-gray-700 text-gray-300 rounded-xl text-xs hover:bg-gray-600">Clear</a>
+                                    {% endif %}
+                                </form>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="bg-gray-800/80 text-gray-300 uppercase tracking-wider font-mono">
+                                        <th class="p-3 border-r border-gray-700">Sr #</th>
+                                        <th class="p-3 border-r border-gray-700">Date</th>
+                                        <th class="p-3 border-r border-gray-700">Title</th>
+                                        <th class="p-3 border-r border-gray-700">Description</th>
+                                        <th class="p-3 border-r border-gray-700">File Name</th>
+                                        <th class="p-3 text-center">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-800 font-mono">
+                                    {% for doc in filtered_documents %}
+                                    <tr class="hover:bg-gray-800/35 transition">
+                                        <td class="p-3 border-r border-gray-800">{{ loop.index }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-300">{{ doc.date }}</td>
+                                        <td class="p-3 border-r border-gray-800 font-bold text-blue-400">{{ doc.title }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-200">{{ doc.description }}</td>
+                                        <td class="p-3 border-r border-gray-800">
+                                            {% if doc.file_name %}
+                                                <button onclick="openFileViewer('data:application/octet-stream;base64,{{ doc.file_data }}', '{{ doc.file_name }}')" class="text-indigo-400 underline hover:text-indigo-300 text-[10px] text-left">📎 {{ doc.file_name }}</button>
+                                            {% else %}
+                                                <span class="text-gray-500 text-[10px]">No File</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="p-3 text-center space-x-2 whitespace-nowrap">
+                                            {% if doc.file_name %}
+                                                <a href="data:application/octet-stream;base64,{{ doc.file_data }}" download="{{ doc.file_name }}" class="text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded text-[10px] font-bold inline-block">Download</a>
+                                            {% endif %}
+                                            <button onclick='openEditDocModal({{ doc|tojson|safe }})' class="text-blue-400 bg-blue-500/10 px-2 py-1 rounded text-[10px] font-bold cursor-pointer">Edit</button>
+                                            <a href="/delete/document/{{ doc.id }}" onclick="return confirm('Confirm delete document?');" class="text-red-400 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold inline-block">Delete</a>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr>
+                                        <td colspan="6" class="p-4 text-center text-gray-400 italic">No documents found.</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
                             </table>
                         </div>
                     </div>
@@ -1120,6 +1246,28 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
+    <div id="editDocModal" class="fixed inset-0 bg-black/70 hidden items-center justify-center p-4 z-50">
+        <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button type="button" onclick="closeEditDocModal()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg">✕</button>
+            <h3 class="text-xl font-bold text-blue-400 mb-4">Edit Document Record</h3>
+            <form id="editDocForm" method="POST" enctype="multipart/form-data" class="space-y-4">
+                <input type="hidden" name="form_type" value="edit_document">
+                <input type="hidden" name="record_id" id="editDocRecordId">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div><label class="text-xs text-gray-400">Date</label><input type="date" name="date" id="editDocDate" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Title</label><input type="text" name="title" id="editDocTitle" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Description</label><input type="text" name="description" id="editDocDesc" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div class="sm:col-span-2">
+                        <label class="text-xs text-blue-400 font-bold block mb-1">Current File: <span id="editDocCurrentFileName" class="text-gray-300 font-normal"></span></label>
+                        <label class="text-xs text-gray-400">Upload New File to Replace (Optional)</label>
+                        <input type="file" name="document_file" class="w-full mt-1 p-2 bg-gray-800 rounded-xl border border-gray-700 text-xs text-gray-300">
+                    </div>
+                </div>
+                <button type="submit" class="w-full py-3 bg-blue-500 hover:bg-blue-600 text-gray-950 font-bold rounded-xl shadow-lg transition text-sm">Save Changes</button>
+            </form>
+        </div>
+    </div>
+
     <div id="fileModal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-3xl p-4 shadow-2xl relative flex flex-col items-center">
             <button onclick="closeFileViewer()" class="absolute top-4 right-4 text-gray-400 hover:text-white font-bold text-lg z-10">✕</button>
@@ -1134,14 +1282,6 @@ DASHBOARD_HTML = """
             if (savedTheme === 'light') {
                 applyLightTheme();
             }
-            
-            // Format numbers with comma automatically
-            document.querySelectorAll('.fmt-num').forEach(el => {
-                const val = parseFloat(el.innerText.replace(/,/g, ''));
-                if (!isNaN(val)) {
-                    el.innerText = val.toLocaleString('en-IN');
-                }
-            });
         });
 
         function toggleTheme() {
@@ -1261,6 +1401,21 @@ DASHBOARD_HTML = """
         function closeEditCashModal() {
             document.getElementById('editCashModal').classList.remove('flex');
             document.getElementById('editCashModal').classList.add('hidden');
+        }
+
+        function openEditDocModal(item) {
+            document.getElementById('editDocModal').classList.remove('hidden');
+            document.getElementById('editDocModal').classList.add('flex');
+            document.getElementById('editDocRecordId').value = item.id;
+            document.getElementById('editDocDate').value = item.date || '';
+            document.getElementById('editDocTitle').value = item.title || '';
+            document.getElementById('editDocDesc').value = item.description || '';
+            document.getElementById('editDocCurrentFileName').innerText = item.file_name || 'None';
+        }
+
+        function closeEditDocModal() {
+            document.getElementById('editDocModal').classList.remove('flex');
+            document.getElementById('editDocModal').classList.add('hidden');
         }
 
         function openFileViewer(dataUri, fileName) {
