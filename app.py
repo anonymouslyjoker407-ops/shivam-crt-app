@@ -128,6 +128,7 @@ def index():
 
     action = request.args.get("action", "dashboard")
     search_query = request.args.get("search", "").strip().lower()
+    cash_search = request.args.get("cash_search", "").strip().lower()
 
     if request.method == "POST":
         form_type = request.form.get("form_type")
@@ -142,16 +143,20 @@ def index():
                     file_data = base64.b64encode(file_bytes).decode("utf-8")
                     attachments.append({"file_name": file_name, "file_data": file_data})
 
+            amt = request.form.get("amount", "0")
+            conv = request.form.get("conveyance", "0")
             new_record = {
                 "id": max([a["id"] for a in data["attendance"]], default=0) + 1,
-                "name": request.form.get("name"),
-                "card_number": request.form.get("card_number"),
-                "role": request.form.get("role"),
-                "in_time": request.form.get("in_time"),
-                "out_time": request.form.get("out_time"),
+                "date": request.form.get("date", datetime.now().strftime("%Y-%m-%d")),
+                "name": request.form.get("name", ""),
+                "card_number": request.form.get("card_number", ""),
+                "role": request.form.get("role", ""),
+                "in_time": request.form.get("in_time", ""),
+                "out_time": request.form.get("out_time", ""),
                 "signature": request.form.get("signature", "Yes"),
-                "amount": int(request.form.get("amount", 0)),
-                "conveyance": int(request.form.get("conveyance", 0)),
+                "description": request.form.get("description", ""),
+                "amount": int(amt) if amt.isdigit() else 0,
+                "conveyance": int(conv) if conv.isdigit() else 0,
                 "attachments": attachments
             }
             data["attendance"].append(new_record)
@@ -159,27 +164,25 @@ def index():
             return redirect(url_for("index", action="attendance"))
 
         elif form_type == "edit_attendance":
-            a_id = int(request.form.get("record_id"))
+            a_id = int(request.form.get("record_id", 0))
             for a in data["attendance"]:
                 if a["id"] == a_id:
-                    a["name"] = request.form.get("name")
-                    a["card_number"] = request.form.get("card_number")
-                    a["role"] = request.form.get("role")
-                    a["in_time"] = request.form.get("in_time")
-                    a["out_time"] = request.form.get("out_time")
-                    a["signature"] = request.form.get("signature")
-                    a["amount"] = int(request.form.get("amount", 0))
-                    a["conveyance"] = int(request.form.get("conveyance", 0))
+                    a["date"] = request.form.get("date", a.get("date", ""))
+                    a["name"] = request.form.get("name", "")
+                    a["card_number"] = request.form.get("card_number", "")
+                    a["role"] = request.form.get("role", "")
+                    a["in_time"] = request.form.get("in_time", "")
+                    a["out_time"] = request.form.get("out_time", "")
+                    a["signature"] = request.form.get("signature", "Yes")
+                    a["description"] = request.form.get("description", "")
+                    amt = request.form.get("amount", "0")
+                    conv = request.form.get("conveyance", "0")
+                    a["amount"] = int(amt) if amt.isdigit() else 0
+                    a["conveyance"] = int(conv) if conv.isdigit() else 0
                     
                     existing_atts = a.get("attachments", [])
                     retained_indices = request.form.getlist("keep_attachments")
                     retained_atts = [existing_atts[int(i)] for i in retained_indices if int(i) < len(existing_atts)]
-                    
-                    if "file_name" in a and not retained_atts and "keep_legacy" in request.form:
-                        pass 
-                    elif "file_name" in a and "keep_legacy" not in request.form:
-                        a.pop("file_name", None)
-                        a.pop("file_data", None)
 
                     uploaded_files = request.files.getlist("attachments")
                     new_attachments = []
@@ -195,11 +198,12 @@ def index():
             return redirect(url_for("index", action="attendance"))
 
         elif form_type == "add_expense":
+            amt = request.form.get("amount", "0")
             new_exp = {
                 "id": max([e["id"] for e in data["expenses"]], default=0) + 1,
-                "category": request.form.get("category"),
-                "amount": int(request.form.get("amount", 0)),
-                "date": request.form.get("date")
+                "category": request.form.get("category", ""),
+                "amount": int(amt) if amt.isdigit() else 0,
+                "date": request.form.get("date", "")
             }
             data["expenses"].append(new_exp)
             save_data(data)
@@ -215,12 +219,13 @@ def index():
                     file_data = base64.b64encode(file_bytes).decode("utf-8")
                     attachments.append({"file_name": file_name, "file_data": file_data})
 
+            amt = request.form.get("amount", "0")
             new_cash_exp = {
                 "id": max([c["id"] for c in data["cash_expenses"]], default=0) + 1,
-                "date": request.form.get("date"),
-                "pay_to": request.form.get("pay_to"),
-                "description": request.form.get("description"),
-                "amount": int(request.form.get("amount", 0)),
+                "date": request.form.get("date", ""),
+                "pay_to": request.form.get("pay_to", ""),
+                "description": request.form.get("description", ""),
+                "amount": int(amt) if amt.isdigit() else 0,
                 "attachments": attachments
             }
             data["cash_expenses"].append(new_cash_exp)
@@ -228,13 +233,14 @@ def index():
             return redirect(url_for("index", action="cash_expenses"))
 
         elif form_type == "edit_cash_expense":
-            c_id = int(request.form.get("record_id"))
+            c_id = int(request.form.get("record_id", 0))
             for c in data["cash_expenses"]:
                 if c["id"] == c_id:
-                    c["date"] = request.form.get("date")
-                    c["pay_to"] = request.form.get("pay_to")
-                    c["description"] = request.form.get("description")
-                    c["amount"] = int(request.form.get("amount", 0))
+                    c["date"] = request.form.get("date", "")
+                    c["pay_to"] = request.form.get("pay_to", "")
+                    c["description"] = request.form.get("description", "")
+                    amt = request.form.get("amount", "0")
+                    c["amount"] = int(amt) if amt.isdigit() else 0
                     
                     existing_atts = c.get("attachments", [])
                     retained_indices = request.form.getlist("keep_attachments")
@@ -253,7 +259,7 @@ def index():
             save_data(data)
             return redirect(url_for("index", action="cash_expenses"))
 
-    # Filtering data for search
+    # Filtering attendance
     filtered_attendance = data["attendance"]
     if search_query:
         filtered_attendance = [
@@ -261,12 +267,21 @@ def index():
             if search_query in str(a.get("name", "")).lower() or
                search_query in str(a.get("card_number", "")).lower() or
                search_query in str(a.get("role", "")).lower() or
-               search_query in str(a.get("in_time", "")).lower() or
-               search_query in str(a.get("out_time", "")).lower() or
-               search_query in str(a.get("signature", "")).lower() or
+               search_query in str(a.get("date", "")).lower() or
+               search_query in str(a.get("description", "")).lower() or
                search_query in str(a.get("amount", "")).lower() or
-               search_query in str(a.get("conveyance", "")).lower() or
-               search_query in str(a.get("amount", 0) + a.get("conveyance", 0)).lower()
+               search_query in str(a.get("conveyance", "")).lower()
+        ]
+
+    # Filtering cash expenses
+    filtered_cash_expenses = data["cash_expenses"]
+    if cash_search:
+        filtered_cash_expenses = [
+            c for c in data["cash_expenses"]
+            if cash_search in str(c.get("date", "")).lower() or
+               cash_search in str(c.get("pay_to", "")).lower() or
+               cash_search in str(c.get("description", "")).lower() or
+               cash_search in str(c.get("amount", "")).lower()
         ]
 
     total_amount = sum(a.get("amount", 0) for a in data["attendance"])
@@ -277,13 +292,16 @@ def index():
     filtered_total_amount = sum(a.get("amount", 0) for a in filtered_attendance)
     filtered_total_conveyance = sum(a.get("conveyance", 0) for a in filtered_attendance)
     filtered_grand_total = filtered_total_amount + filtered_total_conveyance
+    filtered_cash_total = sum(c.get("amount", 0) for c in filtered_cash_expenses)
 
     return render_template_string(
         DASHBOARD_HTML,
         data=data,
         filtered_attendance=filtered_attendance,
+        filtered_cash_expenses=filtered_cash_expenses,
         action=action,
         search_query=search_query,
+        cash_search=cash_search,
         sources_status="GitHub API Synced" if (GITHUB_TOKEN and GITHUB_REPO) else "Local Storage Mode",
         total_amount=total_amount,
         total_conveyance=total_conveyance,
@@ -291,7 +309,8 @@ def index():
         total_cash_expenses=total_cash_expenses,
         filtered_total_amount=filtered_total_amount,
         filtered_total_conveyance=filtered_total_conveyance,
-        filtered_grand_total=filtered_grand_total
+        filtered_grand_total=filtered_grand_total,
+        filtered_cash_total=filtered_cash_total
     )
 
 @app.route("/export/excel")
@@ -307,18 +326,20 @@ def export_excel():
     ws = wb.active
     ws.title = "Attendance Ledger"
 
-    headers = ["Sr #", "Name", "Card No", "Role", "In Time", "Out Time", "Signature", "Amount (₹)", "Conveyance (₹)", "Total (₹)"]
+    headers = ["Sr #", "Date", "Name", "Card No", "Role", "In Time", "Out Time", "Signature", "Description", "Amount (₹)", "Conveyance (₹)", "Total (₹)"]
     ws.append(headers)
 
     for idx, a in enumerate(data.get("attendance", []), 1):
         ws.append([
             idx,
+            a.get("date", ""),
             a.get("name", ""),
             a.get("card_number", ""),
             a.get("role", ""),
             a.get("in_time", ""),
             a.get("out_time", ""),
             a.get("signature", ""),
+            a.get("description", ""),
             a.get("amount", 0),
             a.get("conveyance", 0),
             a.get("amount", 0) + a.get("conveyance", 0)
@@ -344,7 +365,7 @@ def export_pdf():
         return "reportlab library not installed on server.", 400
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
 
     styles = getSampleStyleSheet()
@@ -353,31 +374,121 @@ def export_pdf():
     elements.append(Paragraph("Shivam CRT - Attendance & Operations Master Ledger", title_style))
     elements.append(Spacer(1, 10))
 
-    table_data = [["Sr", "Name", "Card No", "Role", "In", "Out", "Sig", "Amount", "Conv", "Total"]]
+    table_data = [["Sr", "Date", "Name", "Card", "Role", "In", "Out", "Sig", "Desc", "Amount", "Conv", "Total"]]
     for idx, a in enumerate(data.get("attendance", []), 1):
         table_data.append([
             str(idx),
+            str(a.get("date", "")),
             str(a.get("name", "")),
             str(a.get("card_number", "")),
             str(a.get("role", "")),
             str(a.get("in_time", "")),
             str(a.get("out_time", "")),
             str(a.get("signature", "")),
+            str(a.get("description", "")),
             f"Rs {a.get('amount', 0)}",
             f"Rs {a.get('conveyance', 0)}",
             f"Rs {a.get('amount', 0) + a.get('conveyance', 0)}"
         ])
 
-    t = Table(table_data, colWidths=[30, 110, 80, 100, 60, 60, 50, 70, 70, 75])
+    t = Table(table_data, colWidths=[25, 65, 95, 60, 80, 50, 50, 40, 90, 60, 60, 65])
     t.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e1b4b')),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,0), 9),
-        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('FONTSIZE', (0,0), (-1,0), 8),
+        ('BOTTOMPADDING', (0,0), (-1,0), 5),
         ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8fafc')),
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,1), (-1,-1), 7),
+    ]))
+
+    elements.append(t)
+    doc.build(elements)
+    buffer.seek(0)
+
+    return Response(
+        buffer,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Attendance_Ledger.pdf"}
+    )
+
+@app.route("/export/cash_excel")
+def export_cash_excel():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    data = load_data()
+    
+    if not EXCEL_SUPPORT:
+        return "openpyxl library not installed on server.", 400
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Cash Expenses"
+
+    headers = ["Sr #", "Date", "Pay To", "Description", "Amount (₹)"]
+    ws.append(headers)
+
+    for idx, c in enumerate(data.get("cash_expenses", []), 1):
+        ws.append([
+            idx,
+            c.get("date", ""),
+            c.get("pay_to", ""),
+            c.get("description", ""),
+            c.get("amount", 0)
+        ])
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return Response(
+        output,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Cash_Expenses.xlsx"}
+    )
+
+@app.route("/export/cash_pdf")
+def export_cash_pdf():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    data = load_data()
+
+    if not PDF_SUPPORT:
+        return "reportlab library not installed on server.", 400
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    elements = []
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#10b981'), spaceAfter=12)
+
+    elements.append(Paragraph("Shivam CRT - Cash Expenses Master Ledger", title_style))
+    elements.append(Spacer(1, 10))
+
+    table_data = [["Sr", "Date", "Pay To", "Description", "Amount"]]
+    for idx, c in enumerate(data.get("cash_expenses", []), 1):
+        table_data.append([
+            str(idx),
+            str(c.get("date", "")),
+            str(c.get("pay_to", "")),
+            str(c.get("description", "")),
+            f"Rs {c.get('amount', 0)}"
+        ])
+
+    t = Table(table_data, colWidths=[40, 90, 140, 180, 90])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#064e3b')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f0fdf4')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#a7f3d0')),
         ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
         ('FONTSIZE', (0,1), (-1,-1), 8),
     ]))
@@ -389,7 +500,7 @@ def export_pdf():
     return Response(
         buffer,
         mimetype="application/pdf",
-        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Attendance_Ledger.pdf"}
+        headers={"Content-Disposition": "attachment;filename=Shivam_CRT_Cash_Expenses.pdf"}
     )
 
 @app.route("/delete/<string:category>/<int:item_id>")
@@ -436,11 +547,11 @@ LOGIN_HTML = """
         <form method="POST" class="space-y-4">
             <div>
                 <label class="block text-xs text-gray-400 mb-1">Username</label>
-                <input type="text" name="username" required placeholder="admin" class="w-full px-4 py-2.5 bg-gray-800 rounded-xl border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm">
+                <input type="text" name="username" placeholder="admin" class="w-full px-4 py-2.5 bg-gray-800 rounded-xl border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm">
             </div>
             <div>
                 <label class="block text-xs text-gray-400 mb-1">Password</label>
-                <input type="password" name="password" required placeholder="password" class="w-full px-4 py-2.5 bg-gray-800 rounded-xl border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm">
+                <input type="password" name="password" placeholder="password" class="w-full px-4 py-2.5 bg-gray-800 rounded-xl border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm">
             </div>
             <button type="submit" class="w-full py-3 bg-indigo-500 hover:bg-indigo-600 transition rounded-xl font-bold text-gray-950 shadow-lg text-sm mt-2">Log In</button>
         </form>
@@ -538,28 +649,32 @@ DASHBOARD_HTML = """
                 {% elif action == 'attendance' %}
                 <div class="space-y-6">
                     <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl card-panel">
-                        <h2 class="text-xl font-bold text-indigo-400 mb-4">➕ Add Attendance & Multiple Files</h2>
+                        <h2 class="text-xl font-bold text-indigo-400 mb-4">➕ Add Attendance & Operations Record</h2>
                         <form method="POST" enctype="multipart/form-data" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                             <input type="hidden" name="form_type" value="add_attendance">
                             <div>
+                                <label class="text-xs text-gray-400">Date</label>
+                                <input type="date" name="date" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                            </div>
+                            <div>
                                 <label class="text-xs text-gray-400">Full Name</label>
-                                <input type="text" name="name" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="text" name="name" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Card Number</label>
-                                <input type="text" name="card_number" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="CRT-XXXX">
+                                <input type="text" name="card_number" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="CRT-XXXX">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Role / Designation</label>
-                                <input type="text" name="role" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Trainer / Analyst">
+                                <input type="text" name="role" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Trainer / Analyst">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">In Time</label>
-                                <input type="text" name="in_time" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="09:00 AM">
+                                <input type="text" name="in_time" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="09:00 AM">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Out Time</label>
-                                <input type="text" name="out_time" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="06:00 PM">
+                                <input type="text" name="out_time" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="06:00 PM">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Signature Status</label>
@@ -571,11 +686,15 @@ DASHBOARD_HTML = """
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Amount (₹)</label>
-                                <input type="number" name="amount" required value="0" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="number" name="amount" value="0" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Conveyance (₹)</label>
-                                <input type="number" name="conveyance" required value="0" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="number" name="conveyance" value="0" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                            </div>
+                            <div class="sm:col-span-2">
+                                <label class="text-xs text-gray-400">Description / Note</label>
+                                <input type="text" name="description" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Task details or notes...">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Upload Multiple Files (PDF/Images)</label>
@@ -587,16 +706,15 @@ DASHBOARD_HTML = """
                         </form>
                     </div>
 
-                    <!-- EXCEL-LIKE ATTENDANCE TABLE WITH SEARCH & EXPORT -->
+                    <!-- ATTENDANCE TABLE WITH DATE-WISE GROUPING -->
                     <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
                         <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
-                            <h3 class="font-bold dynamic-text">📋 Attendance & Operations Excel Ledger</h3>
+                            <h3 class="font-bold dynamic-text">📋 Date-Wise Grouped Attendance Ledger</h3>
                             
-                            <!-- Search & Export Controls -->
                             <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
                                 <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
                                     <input type="hidden" name="action" value="attendance">
-                                    <input type="text" name="search" value="{{ search_query }}" placeholder="Search name, card, role..." class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-400 w-full sm:w-64">
+                                    <input type="text" name="search" value="{{ search_query }}" placeholder="Search record..." class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-400 w-full sm:w-64">
                                     <button type="submit" class="px-3 py-1.5 bg-indigo-500 text-gray-950 font-bold rounded-xl text-xs hover:bg-indigo-600 transition">Search</button>
                                     {% if search_query %}
                                         <a href="/?action=attendance" class="px-2 py-1.5 bg-gray-700 text-gray-300 rounded-xl text-xs hover:bg-gray-600">Clear</a>
@@ -614,31 +732,56 @@ DASHBOARD_HTML = """
                                 <thead>
                                     <tr class="bg-gray-800/80 text-gray-300 uppercase tracking-wider font-mono">
                                         <th class="p-3 border-r border-gray-700">Sr #</th>
+                                        <th class="p-3 border-r border-gray-700">Date</th>
                                         <th class="p-3 border-r border-gray-700">Name</th>
                                         <th class="p-3 border-r border-gray-700">Card No</th>
                                         <th class="p-3 border-r border-gray-700">Role</th>
-                                        <th class="p-3 border-r border-gray-700">In Time</th>
-                                        <th class="p-3 border-r border-gray-700">Out Time</th>
-                                        <th class="p-3 border-r border-gray-700">Signature</th>
+                                        <th class="p-3 border-r border-gray-700">In / Out</th>
+                                        <th class="p-3 border-r border-gray-700">Sig</th>
+                                        <th class="p-3 border-r border-gray-700">Description</th>
                                         <th class="p-3 border-r border-gray-700">Amount</th>
                                         <th class="p-3 border-r border-gray-700">Conveyance</th>
                                         <th class="p-3 border-r border-gray-700">Total</th>
-                                        <th class="p-3 border-r border-gray-700">Files Attach</th>
+                                        <th class="p-3 border-r border-gray-700">Files</th>
                                         <th class="p-3 text-center">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-gray-800 font-mono">
+                                    {% set ns = namespace(current_date='', date_amt=0, date_conv=0) %}
                                     {% for a in filtered_attendance %}
+                                        {% if a.date != ns.current_date %}
+                                            {% if not loop.first %}
+                                            <!-- Date Subtotal Row -->
+                                            <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
+                                                <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
+                                                <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
+                                                <td class="p-2.5 text-amber-400">₹{{ ns.date_conv }}</td>
+                                                <td colspan="3" class="p-2.5 text-emerald-400">₹{{ ns.date_amt + ns.date_conv }}</td>
+                                            </tr>
+                                            {% endif %}
+                                            {% set ns.current_date = a.date %}
+                                            {% set ns.date_amt = a.amount %}
+                                            {% set ns.date_conv = a.conveyance %}
+                                            <!-- Date Group Header -->
+                                            <tr class="bg-indigo-900/40 text-indigo-400 font-bold">
+                                                <td colspan="13" class="p-2.5 px-4 text-xs tracking-wider">📅 Date Group: {{ a.date or 'Unspecified Date' }}</td>
+                                            </tr>
+                                        {% else %}
+                                            {% set ns.date_amt = ns.date_amt + a.amount %}
+                                            {% set ns.date_conv = ns.date_conv + a.conveyance %}
+                                        {% endif %}
+
                                     <tr class="hover:bg-gray-800/30 transition">
                                         <td class="p-3 border-r border-gray-800">{{ loop.index }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-300">{{ a.date }}</td>
                                         <td class="p-3 border-r border-gray-800 font-bold text-indigo-400">{{ a.name }}</td>
                                         <td class="p-3 border-r border-gray-800">{{ a.card_number }}</td>
                                         <td class="p-3 border-r border-gray-800">{{ a.role }}</td>
-                                        <td class="p-3 border-r border-gray-800">{{ a.in_time }}</td>
-                                        <td class="p-3 border-r border-gray-800">{{ a.out_time }}</td>
+                                        <td class="p-3 border-r border-gray-800 text-[10px]">{{ a.in_time }} - {{ a.out_time }}</td>
                                         <td class="p-3 border-r border-gray-800">
                                             <span class="px-2 py-0.5 rounded text-[10px] {% if a.signature == 'Yes' %}bg-emerald-500/10 text-emerald-400{% elif a.signature == 'No' %}bg-red-500/10 text-red-400{% else %}bg-amber-500/10 text-amber-400{% endif %}">{{ a.signature }}</span>
                                         </td>
+                                        <td class="p-3 border-r border-gray-800 text-gray-300">{{ a.description }}</td>
                                         <td class="p-3 border-r border-gray-800 text-gray-200">₹{{ a.amount }}</td>
                                         <td class="p-3 border-r border-gray-800 text-amber-400">₹{{ a.conveyance }}</td>
                                         <td class="p-3 border-r border-gray-800 font-bold text-emerald-400">₹{{ a.amount + a.conveyance }}</td>
@@ -646,11 +789,9 @@ DASHBOARD_HTML = """
                                             {% if a.attachments %}
                                                 <div class="flex flex-col space-y-1">
                                                     {% for att in a.attachments %}
-                                                    <button onclick="openFileViewer('data:application/octet-stream;base64,{{ att.file_data }}', '{{ att.file_name }}')" class="text-indigo-400 underline hover:text-indigo-300 text-[10px] text-left">📎 {{ att.file_name[:15] }}...</button>
+                                                    <button onclick="openFileViewer('data:application/octet-stream;base64,{{ att.file_data }}', '{{ att.file_name }}')" class="text-indigo-400 underline hover:text-indigo-300 text-[10px] text-left">📎 {{ att.file_name[:12] }}...</button>
                                                     {% endfor %}
                                                 </div>
-                                            {% elif a.file_name %}
-                                                <button onclick="openFileViewer('data:application/octet-stream;base64,{{ a.file_data }}', '{{ a.file_name }}')" class="text-indigo-400 underline hover:text-indigo-300 text-[10px]">📎 {{ a.file_name }}</button>
                                             {% else %}
                                                 <span class="text-gray-500 text-[10px]">No Files</span>
                                             {% endif %}
@@ -660,11 +801,20 @@ DASHBOARD_HTML = """
                                             <a href="/delete/attendance/{{ a.id }}" onclick="return confirm('Confirm delete record?');" class="text-red-400 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold inline-block">Delete</a>
                                         </td>
                                     </tr>
+                                        {% if loop.last and filtered_attendance %}
+                                        <!-- Last Date Subtotal Row -->
+                                        <tr class="bg-indigo-950/40 font-bold border-t-2 border-indigo-500/40">
+                                            <td colspan="8" class="p-2.5 text-right text-indigo-300">Subtotal for {{ ns.current_date }}:</td>
+                                            <td class="p-2.5 text-gray-200">₹{{ ns.date_amt }}</td>
+                                            <td class="p-2.5 text-amber-400">₹{{ ns.date_conv }}</td>
+                                            <td colspan="3" class="p-2.5 text-emerald-400">₹{{ ns.date_amt + ns.date_conv }}</td>
+                                        </tr>
+                                        {% endif %}
                                     {% endfor %}
                                 </tbody>
                                 <tfoot>
                                     <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
-                                        <td colspan="7" class="p-3 text-right uppercase tracking-wider text-indigo-400">Total Sum:</td>
+                                        <td colspan="8" class="p-3 text-right uppercase tracking-wider text-indigo-400">Grand Total Sum:</td>
                                         <td class="p-3 border-r border-gray-700 text-gray-200">₹{{ filtered_total_amount }}</td>
                                         <td class="p-3 border-r border-gray-700 text-amber-400">₹{{ filtered_total_conveyance }}</td>
                                         <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_grand_total }}</td>
@@ -683,15 +833,15 @@ DASHBOARD_HTML = """
                             <input type="hidden" name="form_type" value="add_expense">
                             <div>
                                 <label class="text-xs text-gray-400">Category</label>
-                                <input type="text" name="category" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="text" name="category" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Amount (₹)</label>
-                                <input type="number" name="amount" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="number" name="amount" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Date</label>
-                                <input type="date" name="date" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="date" name="date" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
                             </div>
                             <div class="sm:col-span-3">
                                 <button type="submit" class="w-full py-3 bg-red-500 hover:bg-red-600 font-bold text-gray-950 rounded-xl transition text-sm shadow-lg">Save Expense</button>
@@ -736,19 +886,19 @@ DASHBOARD_HTML = """
                             <input type="hidden" name="form_type" value="add_cash_expense">
                             <div>
                                 <label class="text-xs text-gray-400">Date</label>
-                                <input type="date" name="date" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="date" name="date" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Pay To</label>
-                                <input type="text" name="pay_to" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Recipient Name">
+                                <input type="text" name="pay_to" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Recipient Name">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Description</label>
-                                <input type="text" name="description" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Expense purpose">
+                                <input type="text" name="description" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input" placeholder="Expense purpose">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400">Amount (₹)</label>
-                                <input type="number" name="amount" required value="0" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
+                                <input type="number" name="amount" value="0" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm dynamic-input">
                             </div>
                             <div class="sm:col-span-2">
                                 <label class="text-xs text-gray-400">Upload Multiple Files (PDF/Images)</label>
@@ -761,7 +911,26 @@ DASHBOARD_HTML = """
                     </div>
 
                     <div class="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden card-panel">
-                        <div class="p-4 border-b border-gray-800"><h3 class="font-bold dynamic-text">💵 Cash Expense Ledger</h3></div>
+                        <div class="p-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
+                            <h3 class="font-bold dynamic-text">💵 Cash Expense Ledger</h3>
+                            
+                            <!-- Search & Export Controls for Cash Expense -->
+                            <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                                <form method="GET" action="/" class="flex items-center gap-2 w-full sm:w-auto">
+                                    <input type="hidden" name="action" value="cash_expenses">
+                                    <input type="text" name="cash_search" value="{{ cash_search }}" placeholder="Search cash records..." class="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-400 w-full sm:w-64">
+                                    <button type="submit" class="px-3 py-1.5 bg-emerald-500 text-gray-950 font-bold rounded-xl text-xs hover:bg-emerald-600 transition">Search</button>
+                                    {% if cash_search %}
+                                        <a href="/?action=cash_expenses" class="px-2 py-1.5 bg-gray-700 text-gray-300 rounded-xl text-xs hover:bg-gray-600">Clear</a>
+                                    {% endif %}
+                                </form>
+                                <div class="flex items-center gap-1 border-l border-gray-700 pl-2">
+                                    <a href="/export/cash_excel" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1">📊 Excel</a>
+                                    <a href="/export/cash_pdf" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1">📄 PDF</a>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="overflow-x-auto">
                             <table class="w-full text-left border-collapse text-xs">
                                 <thead>
@@ -776,7 +945,7 @@ DASHBOARD_HTML = """
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-gray-800 font-mono">
-                                    {% for c in data.cash_expenses %}
+                                    {% for c in filtered_cash_expenses %}
                                     <tr class="hover:bg-gray-800/35 transition">
                                         <td class="p-3 border-r border-gray-800">{{ loop.index }}</td>
                                         <td class="p-3 border-r border-gray-800 text-gray-300">{{ c.date }}</td>
@@ -804,7 +973,7 @@ DASHBOARD_HTML = """
                                 <tfoot>
                                     <tr class="bg-gray-800/90 font-mono font-bold text-gray-200 border-t-2 border-gray-700">
                                         <td colspan="4" class="p-3 text-right uppercase tracking-wider text-emerald-400">Total Sum:</td>
-                                        <td colspan="3" class="p-3 text-emerald-400">₹{{ total_cash_expenses }}</td>
+                                        <td colspan="3" class="p-3 text-emerald-400">₹{{ filtered_cash_total }}</td>
                                     </tr>
                                 </tfoot>
                             </table>
@@ -826,14 +995,16 @@ DASHBOARD_HTML = """
                 <input type="hidden" name="form_type" value="edit_attendance">
                 <input type="hidden" name="record_id" id="editRecordId">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div><label class="text-xs text-gray-400">Name</label><input type="text" name="name" id="editName" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div><label class="text-xs text-gray-400">Card Number</label><input type="text" name="card_number" id="editCard" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div><label class="text-xs text-gray-400">Role</label><input type="text" name="role" id="editRole" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div><label class="text-xs text-gray-400">In Time</label><input type="text" name="in_time" id="editIn" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div><label class="text-xs text-gray-400">Out Time</label><input type="text" name="out_time" id="editOut" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Date</label><input type="date" name="date" id="editDate" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Name</label><input type="text" name="name" id="editName" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Card Number</label><input type="text" name="card_number" id="editCard" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Role</label><input type="text" name="role" id="editRole" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">In Time</label><input type="text" name="in_time" id="editIn" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Out Time</label><input type="text" name="out_time" id="editOut" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
                     <div><label class="text-xs text-gray-400">Signature</label><select name="signature" id="editSig" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"><option value="Yes">Yes</option><option value="No">No</option><option value="Mistake">Mistake</option></select></div>
-                    <div><label class="text-xs text-gray-400">Amount (₹)</label><input type="number" name="amount" id="editAmount" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div><label class="text-xs text-gray-400">Conveyance (₹)</label><input type="number" name="conveyance" id="editConveyance" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Amount (₹)</label><input type="number" name="amount" id="editAmount" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Conveyance (₹)</label><input type="number" name="conveyance" id="editConveyance" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Description</label><input type="text" name="description" id="editDesc" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
                     
                     <div class="sm:col-span-2 bg-gray-800/50 p-3 rounded-xl border border-gray-700">
                         <label class="text-xs text-indigo-400 font-bold block mb-2">Manage Existing Uploaded Files (Uncheck to Remove):</label>
@@ -856,10 +1027,10 @@ DASHBOARD_HTML = """
                 <input type="hidden" name="form_type" value="edit_cash_expense">
                 <input type="hidden" name="record_id" id="editCashRecordId">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div><label class="text-xs text-gray-400">Date</label><input type="date" name="date" id="editCashDate" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div><label class="text-xs text-gray-400">Pay To</label><input type="text" name="pay_to" id="editCashPayTo" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Description</label><input type="text" name="description" id="editCashDesc" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
-                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Amount (₹)</label><input type="number" name="amount" id="editCashAmount" required class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Date</label><input type="date" name="date" id="editCashDate" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div><label class="text-xs text-gray-400">Pay To</label><input type="text" name="pay_to" id="editCashPayTo" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Description</label><input type="text" name="description" id="editCashDesc" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
+                    <div class="sm:col-span-2"><label class="text-xs text-gray-400">Amount (₹)</label><input type="number" name="amount" id="editCashAmount" class="w-full mt-1 p-2.5 bg-gray-800 rounded-xl border border-gray-700 text-sm"></div>
                     
                     <div class="sm:col-span-2 bg-gray-800/50 p-3 rounded-xl border border-gray-700">
                         <label class="text-xs text-emerald-400 font-bold block mb-2">Manage Existing Uploaded Files (Uncheck to Remove):</label>
@@ -935,23 +1106,21 @@ DASHBOARD_HTML = """
             document.getElementById('editModal').classList.remove('hidden');
             document.getElementById('editModal').classList.add('flex');
             document.getElementById('editRecordId').value = item.id;
-            document.getElementById('editName').value = item.name;
-            document.getElementById('editCard').value = item.card_number;
-            document.getElementById('editRole').value = item.role;
-            document.getElementById('editIn').value = item.in_time;
-            document.getElementById('editOut').value = item.out_time;
-            document.getElementById('editSig').value = item.signature;
-            document.getElementById('editAmount').value = item.amount;
-            document.getElementById('editConveyance').value = item.conveyance;
+            document.getElementById('editDate').value = item.date || '';
+            document.getElementById('editName').value = item.name || '';
+            document.getElementById('editCard').value = item.card_number || '';
+            document.getElementById('editRole').value = item.role || '';
+            document.getElementById('editIn').value = item.in_time || '';
+            document.getElementById('editOut').value = item.out_time || '';
+            document.getElementById('editSig').value = item.signature || 'Yes';
+            document.getElementById('editAmount').value = item.amount || 0;
+            document.getElementById('editConveyance').value = item.conveyance || 0;
+            document.getElementById('editDesc').value = item.description || '';
 
             const attListContainer = document.getElementById('editAttachmentsList');
             attListContainer.innerHTML = '';
             
             let files = item.attachments || [];
-            if (files.length === 0 && item.file_name) {
-                files = [{ file_name: item.file_name, file_data: item.file_data }];
-            }
-
             if (files.length === 0) {
                 attListContainer.innerHTML = '<p class="text-xs text-gray-400 italic">No files currently attached.</p>';
             } else {
@@ -979,10 +1148,10 @@ DASHBOARD_HTML = """
             document.getElementById('editCashModal').classList.remove('hidden');
             document.getElementById('editCashModal').classList.add('flex');
             document.getElementById('editCashRecordId').value = item.id;
-            document.getElementById('editCashDate').value = item.date;
-            document.getElementById('editCashPayTo').value = item.pay_to;
-            document.getElementById('editCashDesc').value = item.description;
-            document.getElementById('editCashAmount').value = item.amount;
+            document.getElementById('editCashDate').value = item.date || '';
+            document.getElementById('editCashPayTo').value = item.pay_to || '';
+            document.getElementById('editCashDesc').value = item.description || '';
+            document.getElementById('editCashAmount').value = item.amount || 0;
 
             const attListContainer = document.getElementById('editCashAttachmentsList');
             attListContainer.innerHTML = '';
