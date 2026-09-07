@@ -1,6 +1,15 @@
 {
     "attendance": [],
     "expenses": [],
-    "cash_expenses": [],
+    "cash_expenses": [
+        {
+            "id": 1,
+            "date": "2026-09-04",
+            "pay_to": "Sandipkumar",
+            "description": "Worker Conveyance",
+            "amount": 4600,
+            "attachments": []
+        }
+    ],
     "documents": []
 }
